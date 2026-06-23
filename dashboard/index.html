@@ -34,8 +34,6 @@
             <span x-text="statusLabel">En espera</span>
           </div>
           <button type="button"
-                  x-show="isAdmin"
-                  data-admin-only
                   class="telegram-global-toggle"
                   :class="{ active: telegramGlobalAlertsEnabled }"
                   :aria-pressed="telegramGlobalAlertsEnabled"
