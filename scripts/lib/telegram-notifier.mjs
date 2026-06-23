@@ -141,8 +141,8 @@ export function formatTelegramNotification(notification) {
 
   if (isUserAlert(notification)) {
     lines.push(payload.rule?.condition
-      ? `<b>Tu alerta</b> · ${escapeHtml(conditionLabel(payload.rule.condition))}`
-      : '<b>Tu alerta</b>');
+      ? `🚨 <b>Tu alerta</b> · ${escapeHtml(conditionLabel(payload.rule.condition))}`
+      : '🚨 <b>Tu alerta</b>');
   }
 
   lines.push(`<b>${escapeHtml(matchLine(row))}</b>`);
