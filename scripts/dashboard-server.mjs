@@ -225,6 +225,7 @@ function serveStatic(request, response) {
     '.html': 'text/html; charset=utf-8',
     '.css': 'text/css; charset=utf-8',
     '.js': 'application/javascript; charset=utf-8',
+    '.svg': 'image/svg+xml',
   }[extname(filePath)] || 'application/octet-stream';
 
   response.writeHead(200, { 'content-type': type });

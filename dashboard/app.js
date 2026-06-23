@@ -1065,5 +1065,4 @@ refresh();
 setInterval(refresh, 10000);
 setInterval(() => {
   renderMetrics(state.latestCycle);
-  renderAlerts(state.latestCycle);
 }, 1000);

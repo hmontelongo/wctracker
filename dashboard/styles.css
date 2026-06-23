@@ -928,7 +928,6 @@ pre {
     padding: 14px 0 6px;
     background: transparent;
     border-bottom: none;
-    overflow: visible;
   }
   .alert-summary-desktop { display: none; }
   .alert-summary-mobile {
