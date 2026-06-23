@@ -9,6 +9,7 @@ import {
   configFromEnv,
 } from './lib/fifa-job-system.mjs';
 import {
+  processNextMatchJob,
   publishLatestCycleFromQueue,
   runDiscoveryOnce,
   runWorkerPoolOnce,
@@ -172,30 +173,41 @@ async function discoveryLoop(overrides = {}) {
   }
 }
 
+async function singleWorkerLoop(workerIndex, overrides = {}) {
+  while (jobState.tickerRunning) {
+    const config = configForRun(overrides);
+
+    try {
+      const result = await processNextMatchJob(config, workerIndex, broadcast);
+
+      if (result.processed) {
+        const published = publishLatestCycleFromQueue(config, broadcast);
+        jobState.completedAt = published?.cycle?.cycleCompletedAt || jobState.completedAt;
+      }
+
+      if (!result.claimed) {
+        await sleep(config.workerIdleMs);
+      }
+    } catch (error) {
+      jobState.lastError = error.message;
+      broadcast({
+        event: 'worker_loop_error',
+        workerIndex: workerIndex + 1,
+        error: error.message,
+      });
+      await sleep(config.workerIdleMs);
+    }
+  }
+}
+
 async function workerLoop(overrides = {}) {
   jobState.workerLoopRunning = true;
 
   try {
-    while (jobState.tickerRunning) {
-      const config = configForRun(overrides);
-
-      try {
-        const sweep = await runWorkerPoolOnce(config, broadcast);
-
-        if (sweep.processed > 0) {
-          const published = publishLatestCycleFromQueue(config, broadcast);
-          jobState.completedAt = published?.cycle?.cycleCompletedAt || jobState.completedAt;
-        }
-
-        if (sweep.claimed === 0) {
-          await sleep(config.workerIdleMs);
-        }
-      } catch (error) {
-        jobState.lastError = error.message;
-        broadcast({ event: 'worker_loop_error', error: error.message });
-        await sleep(config.workerIdleMs);
-      }
-    }
+    const config = configForRun(overrides);
+    await Promise.all(
+      Array.from({ length: config.matchConcurrency }, (_, index) => singleWorkerLoop(index, overrides)),
+    );
   } finally {
     jobState.workerLoopRunning = false;
   }

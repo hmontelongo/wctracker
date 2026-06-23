@@ -192,6 +192,75 @@ export async function runWorkerPoolOnce(config, emit = () => {}) {
   };
 }
 
+export async function processNextMatchJob(config, workerIndex = 0, emit = () => {}) {
+  const workerOwner = owner(`match-worker-${workerIndex + 1}`);
+  const job = claimNextMatchJob(workerOwner, config.jobLeaseMs);
+
+  if (!job) {
+    return {
+      claimed: false,
+      processed: false,
+    };
+  }
+
+  emit({
+    event: 'match_job_claimed',
+    jobId: job.id,
+    matchCode: job.match_code || job.card?.matchCode,
+    attempt: job.attempts,
+    workerIndex: workerIndex + 1,
+  });
+
+  let session = null;
+  let result;
+
+  try {
+    session = await openWorkerSession(config, workerIndex, emit);
+    result = await runMatchJobWithRetries(config, session, job.card, emit);
+  } catch (error) {
+    result = {
+      checkedAt: new Date().toISOString(),
+      card: job.card,
+      ok: false,
+      error: error.message,
+      response: null,
+      target: null,
+      availability: null,
+      rawTicketTypes: null,
+    };
+  } finally {
+    await session?.close();
+    emit({
+      event: 'match_worker_finished',
+      workerIndex: workerIndex + 1,
+    });
+  }
+
+  const completion = completeMatchJob(job.id, workerOwner, result, {
+    retryDelayMs: config.jobRetryDelayMs,
+  });
+
+  emit({
+    event: 'match_job_stored',
+    jobId: job.id,
+    matchCode: job.match_code || job.card?.matchCode,
+    ok: result.ok,
+    rows: result.availability?.rowCount ?? 0,
+    availableRows: result.availability?.availableRows?.length ?? 0,
+    status: completion.status,
+    willRetry: completion.willRetry,
+    error: result.error,
+    workerIndex: workerIndex + 1,
+  });
+
+  return {
+    claimed: true,
+    processed: completion.updated,
+    status: completion.status,
+    willRetry: completion.willRetry,
+  };
+}
+
 export function publishLatestCycleFromQueue(config, emit = () => {}) {
   const matchResults = readLatestMatchJobResults();
 
