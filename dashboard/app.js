@@ -3,6 +3,8 @@ const state = {
   job: null,
   selectedRow: null,
   selectedKey: null,
+  drawerType: null,
+  drawerMatchCode: null,
   filter: 'available',
   isAdmin: location.pathname.replace(/\/$/, '').endsWith('/admin') || new URLSearchParams(location.search).has('admin'),
   events: [],
@@ -10,11 +12,26 @@ const state = {
 
 const DEFAULT_ALERT_RETENTION_MS = 10 * 60 * 1000;
 
+const ZONE_COLORS = {
+  'Champions Club': '#b8902f',
+  'VIP': '#b5527e',
+  'Pitchside Lounge': '#3d8a93',
+  'Trophy Lounge': '#7568b0',
+  'FIFA Pavilion': '#3f8c63',
+};
+
+const ZONE_DESCRIPTIONS = {
+  'Champions Club': 'Asientos preferentes a pasos de los salones de hospitalidad, con servicio de bebidas premium y comida completa antes y después del partido.',
+  'VIP': 'Sala VIP climatizada con bar premium y asientos preferentes en zona central.',
+  'Pitchside Lounge': 'A pie de cancha: la experiencia más cercana a la acción, con servicio dedicado.',
+  'Trophy Lounge': 'Hospitalidad de alto nivel junto al trofeo, con menú de autor y entretenimiento en vivo.',
+  'FIFA Pavilion': 'Un retiro exclusivo en el perímetro seguro junto al estadio, con bebidas y cocina callejera gourmet antes y después del partido.',
+};
+
 const els = {
-  statusDot: document.getElementById('statusDot'),
+  statusPill: document.getElementById('statusPill'),
   statusText: document.getElementById('statusText'),
   freshnessText: document.getElementById('freshnessText'),
-  currentStage: document.getElementById('currentStage'),
   shopContextLabel: document.getElementById('shopContextLabel'),
   countryInput: document.getElementById('countryInput'),
   concurrencyInput: document.getElementById('concurrencyInput'),
@@ -37,6 +54,7 @@ const els = {
   availabilityFilter: document.getElementById('availabilityFilter'),
   ticketDetail: document.getElementById('ticketDetail'),
   ticketBackdrop: document.getElementById('ticketBackdrop'),
+  detailTitle: document.getElementById('detailTitle'),
   detailBody: document.getElementById('detailBody'),
   closeDetailButton: document.getElementById('closeDetailButton'),
   cycleOutput: document.getElementById('cycleOutput'),
@@ -63,6 +81,47 @@ async function postJson(path, body = {}) {
     const payload = await response.json().catch(() => ({}));
     throw new Error(payload.error || `Request failed: ${response.status}`);
   }
+}
+
+function zoneColor(row) {
+  const title = row.packageTitle || row.loungeId || '';
+  for (const [zone, color] of Object.entries(ZONE_COLORS)) {
+    if (title.toLowerCase().includes(zone.toLowerCase())) {
+      return color;
+    }
+  }
+
+  if (/champion/i.test(title)) return ZONE_COLORS['Champions Club'];
+  if (/vip/i.test(title)) return ZONE_COLORS['VIP'];
+  if (/pitchside/i.test(title)) return ZONE_COLORS['Pitchside Lounge'];
+  if (/trophy/i.test(title)) return ZONE_COLORS['Trophy Lounge'];
+  if (/pavilion|fifa\s*p/i.test(title)) return ZONE_COLORS['FIFA Pavilion'];
+
+  return '#9a9688';
+}
+
+function zoneName(row) {
+  const title = row.packageTitle || '';
+  for (const zone of Object.keys(ZONE_COLORS)) {
+    if (title.toLowerCase().includes(zone.toLowerCase())) {
+      return zone;
+    }
+  }
+
+  if (/champion/i.test(title)) return 'Champions Club';
+  if (/vip/i.test(title)) return 'VIP';
+  if (/pitchside/i.test(title)) return 'Pitchside Lounge';
+  if (/trophy/i.test(title)) return 'Trophy Lounge';
+  if (/pavilion/i.test(title)) return 'FIFA Pavilion';
+
+  return title || row.loungeId || 'Boleto';
+}
+
+function availColor(quantity) {
+  const n = Number(quantity || 0);
+  if (n <= 0) return '#bdb8ac';
+  if (n <= 2) return '#c0392b';
+  return '#56544d';
 }
 
 function describeEvent(event) {
@@ -114,23 +173,23 @@ function describeEvent(event) {
 }
 
 function setStatus(job) {
-  els.statusDot.className = 'status-dot idle';
+  els.statusPill.className = 'status-pill idle';
   els.statusText.textContent = 'En espera';
-  els.currentStage.textContent = describeEvent(job?.lastEvent);
   els.startTickerButton.hidden = !state.isAdmin || Boolean(job?.tickerRunning);
   els.stopTickerButton.hidden = !state.isAdmin || !job?.tickerRunning;
   els.runCycleButton.disabled = Boolean(job?.running);
   els.startTickerButton.disabled = Boolean(job?.running);
 
   if (job?.lastError) {
-    els.statusDot.className = 'status-dot error';
+    els.statusPill.className = 'status-pill error';
     els.statusText.textContent = 'Error';
   } else if (job?.running) {
-    els.statusDot.className = 'status-dot running';
-    els.statusText.textContent = 'Ejecutando';
+    els.statusPill.className = 'status-pill live';
+    els.statusText.textContent = describeEvent(job?.lastEvent) || 'Ejecutando';
   } else if (job?.tickerRunning) {
-    els.statusDot.className = 'status-dot live';
-    els.statusText.textContent = 'Activo';
+    els.statusPill.className = 'status-pill live';
+    const country = state.latestCycle?.visitorCountry || els.countryInput.value || 'México';
+    els.statusText.textContent = `En vivo · ${country}`;
   }
 }
 
@@ -184,7 +243,7 @@ function timeAgo(timestamp) {
   const minutes = Math.floor(seconds / 60);
 
   if (minutes < 60) {
-    return `${minutes}m ${seconds % 60}s`;
+    return `${minutes}m ${String(seconds % 60).padStart(2, '0')}s`;
   }
 
   const hours = Math.floor(minutes / 60);
@@ -288,19 +347,15 @@ function activeAlerts(cycle) {
 
 function availabilityFreshness(row) {
   if (!row.available) {
-    return row.checkedAt ? `Revisado ${timeAgo(row.checkedAt)}` : 'No disponible';
+    return { text: row.checkedAt ? `Revisado ${timeAgo(row.checkedAt)}` : 'No disponible', type: 'none' };
   }
 
   if (isActiveAlert(row)) {
-    const label = alertReason(row) === 'increased' ? 'Mas stock' : 'Nuevo';
-    return `${label} ${timeAgo(alertTimestamp(row))}`;
+    const label = alertReason(row) === 'increased' ? 'Más stock' : 'Nuevo';
+    return { text: `${label} · ${timeAgo(alertTimestamp(row))}`, type: 'new' };
   }
 
-  return row.checkedAt ? `Revisado ${timeAgo(row.checkedAt)}` : 'Disponible';
-}
-
-function isFreshAvailability(row) {
-  return isActiveAlert(row);
+  return { text: row.checkedAt ? `Revisado · ${timeAgo(row.checkedAt)}` : 'Disponible', type: 'rev' };
 }
 
 function expandPathToken(token) {
@@ -397,7 +452,7 @@ function renderMetrics(cycle) {
   els.alertCount.textContent = alerts.length;
   els.lastUpdated.textContent = cycle?.cycleCompletedAt
     ? new Date(cycle.cycleCompletedAt).toLocaleString()
-    : 'Sin ciclos aun';
+    : 'Sin ciclos aún';
   els.freshnessText.textContent = timeAgo(cycle?.cycleCompletedAt);
   els.shopContextLabel.textContent = cycle?.visitorCountry || els.countryInput.value || 'Mexico';
 }
@@ -412,33 +467,50 @@ function renderAlerts(cycle) {
   }
 
   els.alertPanel.hidden = false;
+
+  const retMin = Math.round(alertRetentionMs(cycle) / 60000);
   els.alertPanel.innerHTML = `
-    <div>
-      <span>Alertas nuevas</span>
-      <strong>${alerts.length}</strong>
-      <small>Boletos que aparecieron o aumentaron stock en los ultimos ${Math.round(alertRetentionMs(cycle) / 60000)} minutos.</small>
+    <div class="alert-summary">
+      <div class="alert-summary-count">
+        <strong>${alerts.length}</strong>
+        <span>ALERTAS<br>NUEVAS</span>
+      </div>
+      <p>Boletos que aparecieron o subieron stock en los últimos ${retMin} minutos.</p>
     </div>
-    <div class="alert-list"></div>
+    <div class="alert-grid"></div>
   `;
 
-  const list = els.alertPanel.querySelector('.alert-list');
+  const grid = els.alertPanel.querySelector('.alert-grid');
 
   for (const row of alerts.slice(0, 8)) {
-    const item = document.createElement('button');
-    item.type = 'button';
-    item.className = 'alert-item';
-    const reason = alertReason(row) === 'increased' ? 'Mas stock' : 'Nuevo';
-    item.innerHTML = `
-      <strong>${matchTitle(row)} · ${row.packageTitle || row.loungeId || 'Boleto'}</strong>
-      <span>${row.matchCode || 'N/A'} · ${matchLocation(row)} · ${row.seatingName || row.seatingCode || 'Configuracion'} · ${row.availableQuantity || 0} disponibles · ${money(row.priceMxn)} · ${reason} ${timeAgo(alertTimestamp(row))}</span>
+    const color = zoneColor(row);
+    const zone = zoneName(row);
+    const teams = matchTitle(row);
+    const sub = zone + (row.seatingName ? ` · ${row.seatingName}` : '');
+    const qty = Number(row.availableQuantity || 0);
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'alert-card';
+    button.innerHTML = `
+      <div class="alert-card-head">
+        <span class="zone-dot" style="background:${color}"></span>
+        <span class="alert-card-code">${row.matchCode || 'N/A'}</span>
+        <span class="alert-card-zone">${teams}</span>
+      </div>
+      <div class="alert-card-sub">${sub}</div>
+      <div class="alert-card-foot">
+        <span class="alert-card-price">${money(row.priceMxn)}</span>
+        <span class="alert-card-avail" style="color:${availColor(qty)}">${qty} disp.</span>
+      </div>
     `;
-    item.addEventListener('click', () => {
+    button.addEventListener('click', () => {
       state.selectedKey = ticketKey(row);
       state.selectedRow = row;
+      state.drawerType = 'ticket';
       renderTicketDetail();
       renderGameBoard();
     });
-    list.appendChild(item);
+    grid.appendChild(button);
   }
 }
 
@@ -452,71 +524,113 @@ function renderGameBoard() {
     empty.className = 'empty-state';
     empty.innerHTML = `
       <h2>No hay boletos para mostrar</h2>
-      <p>El ultimo ciclo no encontro boletos con el filtro actual. Cambia el filtro o espera el siguiente ciclo.</p>
+      <p>El último ciclo no encontró boletos con el filtro actual. Cambia el filtro o espera el siguiente ciclo.</p>
     `;
     els.gameBoard.appendChild(empty);
     return;
   }
 
+  const allRows = state.latestCycle?.rows || [];
+
   for (const match of matches) {
-    const availableCount = match.rows.filter((row) => row.available).length;
-    const totalQuantity = match.rows.reduce((sum, row) => sum + Number(row.availableQuantity || 0), 0);
+    const matchAllRows = allRows.filter((r) => r.matchCode === match.matchCode);
+    const availableInMatch = matchAllRows.filter((r) => r.available).length;
+    const totalInMatch = matchAllRows.length;
+    const totalQuantity = match.rows.reduce((sum, r) => sum + Number(r.availableQuantity || 0), 0);
+    const meta = matchLocation({ matchCode: match.matchCode, ...match });
     const possibleRivals = possibleRivalsText(match.teams);
+
     const card = document.createElement('article');
-    card.className = 'game-card';
+    card.className = 'match-card';
     card.innerHTML = `
-      <header class="game-head">
-        <div>
-          <span class="match-code">${match.matchCode}</span>
-          <h2>${match.teams}</h2>
-          <p>${[match.city, match.country, match.venue, match.matchDate].filter(Boolean).join(' · ') || 'Informacion del partido pendiente'}</p>
-          ${possibleRivals ? `<p class="match-path">${possibleRivals}</p>` : ''}
+      <div class="match-head">
+        <div class="match-head-left">
+          <span class="match-pill">${match.matchCode}</span>
+          <div style="min-width:0">
+            <div class="match-title">${match.teams}</div>
+            <div class="match-meta">${meta}${possibleRivals ? ` · ${possibleRivals}` : ''}</div>
+          </div>
         </div>
-        <div class="game-stock">
-          <strong>${totalQuantity}</strong>
-          <span>boletos detectados</span>
+        <div class="match-head-right">
+          <button type="button" class="match-info-link" data-match-info="${match.matchCode}">Info →</button>
+          <span class="match-avail-badge">${availableInMatch}/${totalInMatch} disp.</span>
+          <div class="match-detected">
+            <strong>${totalQuantity.toLocaleString('en-US')}</strong>
+            <small>DETECTADOS</small>
+          </div>
         </div>
-      </header>
-      <div class="ticket-grid"></div>
-      <footer>${availableCount}/${match.rows.length} tipos disponibles</footer>
+      </div>
     `;
 
-    const grid = card.querySelector('.ticket-grid');
+    if (match.rows.length === 0) {
+      const emptyDiv = document.createElement('div');
+      emptyDiv.className = 'match-empty';
+      emptyDiv.textContent = 'Sin boletos en este filtro.';
+      card.appendChild(emptyDiv);
+    } else {
+      const grid = document.createElement('div');
+      grid.className = 'ticket-grid';
 
-    for (const row of [...match.rows].sort(ticketSort)) {
-      const key = ticketKey(row);
-      const button = document.createElement('button');
-      button.className = `ticket-card ${row.available ? 'available' : 'unavailable'} ${state.selectedKey === key ? 'selected' : ''}`;
-      const freshnessClass = isFreshAvailability(row) ? 'fresh' : '';
-      button.innerHTML = `
-        <span class="ticket-title">${row.packageTitle || row.loungeId || 'Tipo de boleto'}</span>
-        <span class="ticket-seat">${row.seatingName || row.seatingCode || 'Configuracion'}</span>
-        <span class="ticket-price">${money(row.priceMxn)}</span>
-        <span class="ticket-qty">${row.available ? `${row.availableQuantity || 0} disponibles` : 'No disponible'}</span>
-        <span class="ticket-freshness ${freshnessClass}">${availabilityFreshness(row)}</span>
-      `;
-      button.addEventListener('click', () => {
-        state.selectedRow = row;
-        state.selectedKey = key;
-        renderTicketDetail();
-        renderGameBoard();
-      });
-      grid.appendChild(button);
+      for (const row of [...match.rows].sort(ticketSort)) {
+        const key = ticketKey(row);
+        const color = zoneColor(row);
+        const zone = zoneName(row);
+        const sub = row.seatingName || row.seatingCode || 'Configuración';
+        const qty = Number(row.availableQuantity || 0);
+        const freshness = availabilityFreshness(row);
+
+        let freshnessHtml = '';
+        if (freshness.type === 'new') {
+          freshnessHtml = `<span class="fresh-tag-new"><span style="width:6px;height:6px;border-radius:50%;background:#c8820a;flex:none"></span>${freshness.text}</span>`;
+        } else if (freshness.type === 'rev') {
+          freshnessHtml = `<span class="fresh-tag-rev">${freshness.text}</span>`;
+        } else {
+          freshnessHtml = `<span class="fresh-tag-none">${freshness.text}</span>`;
+        }
+
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = `ticket-cell${row.available ? '' : ' unavailable'}${state.selectedKey === key ? ' selected' : ''}`;
+        button.innerHTML = `
+          <span class="zone-dot" style="background:${color}"></span>
+          <span class="ticket-zone">${zone}</span>
+          <span class="ticket-sub">${sub}</span>
+          <span class="ticket-price">${money(row.priceMxn)}</span>
+          <span class="ticket-avail" style="color:${availColor(qty)}">${row.available ? `${qty} disp.` : 'No disponible'}</span>
+          <span class="ticket-freshness">${freshnessHtml}</span>
+        `;
+        button.addEventListener('click', () => {
+          state.selectedRow = row;
+          state.selectedKey = key;
+          state.drawerType = 'ticket';
+          renderTicketDetail();
+          renderGameBoard();
+        });
+        grid.appendChild(button);
+      }
+
+      card.appendChild(grid);
     }
+
+    card.querySelector('[data-match-info]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      state.drawerType = 'match';
+      state.drawerMatchCode = match.matchCode;
+      state.selectedRow = null;
+      state.selectedKey = null;
+      renderTicketDetail();
+    });
 
     els.gameBoard.appendChild(card);
   }
 }
 
-function detailItem(label, value) {
-  if (value === null || value === undefined || value === '') {
-    return '';
+function renderTicketDetail() {
+  if (state.drawerType === 'match' && state.drawerMatchCode) {
+    renderMatchDetail();
+    return;
   }
 
-  return `<div><span>${label}</span><strong>${value}</strong></div>`;
-}
-
-function renderTicketDetail() {
   const row = state.selectedRow;
 
   if (!row) {
@@ -525,54 +639,172 @@ function renderTicketDetail() {
     els.ticketDetail.setAttribute('aria-hidden', 'true');
     els.ticketBackdrop.hidden = true;
     els.detailBody.innerHTML = '';
+    state.drawerType = null;
     return;
   }
 
-  const details = Array.isArray(row.rawTicketType?.details) ? row.rawTicketType.details : [];
-  const buyUrl = row.fifaShopUrl || state.latestCycle?.shopUrl || '#';
   const info = matchInfo(row);
-  const benefits = details
-    .map((detail) => `<li><b>${detail.title || 'Detalle'}:</b> ${detail.content || ''}</li>`)
-    .join('');
+  const color = zoneColor(row);
+  const zone = zoneName(row);
+  const sub = row.seatingName || row.seatingCode || 'Configuración';
+  const qty = Number(row.availableQuantity || 0);
+  const freshness = availabilityFreshness(row);
+  const buyUrl = row.fifaShopUrl || state.latestCycle?.shopUrl || '#';
 
+  let statusLabel, statusColor, statusBg;
+  if (freshness.type === 'new') {
+    statusLabel = alertReason(row) === 'increased' ? 'Más stock' : 'Nuevo';
+    statusColor = '#56544d';
+    statusBg = '#f1efe8';
+  } else if (!row.available) {
+    statusLabel = 'No disponible';
+    statusColor = '#9a9688';
+    statusBg = '#f1efe8';
+  } else {
+    statusLabel = 'Revisado';
+    statusColor = '#56544d';
+    statusBg = '#f3f1ea';
+  }
+
+  const details = Array.isArray(row.rawTicketType?.details) ? row.rawTicketType.details : [];
+  const desc = row.rawTicketType?.description || ZONE_DESCRIPTIONS[zone] || '';
+
+  const fields = [
+    { k: 'Asiento', v: sub },
+    { k: 'Código de asiento', v: row.seatingCode },
+    { k: 'Tipo', v: zone },
+    { k: 'Clase', v: row.packageClass || row.packageShortTitle || '' },
+    { k: 'Precio base', v: `Desde ${money(row.priceMxn)} MXN / persona` },
+    { k: 'Performance ID', v: row.performanceId },
+    { k: 'SeatCategory ID', v: row.rawSeatingSection?.SeatCategoryId },
+    { k: 'AudienceSub ID', v: row.rawSeatingSection?.AudienceSubCategoryId },
+  ].filter((f) => f.v);
+
+  const benefitsHtml = details.length > 0
+    ? details.map((d) => `
+        <div class="detail-include-item">
+          <span class="detail-include-dot" style="background:${color}"></span>
+          <div class="detail-include-text"><b>${d.title || 'Detalle'}:</b> ${d.content || ''}</div>
+        </div>
+      `).join('')
+    : '';
+
+  els.detailTitle.textContent = 'DETALLE DEL BOLETO';
   els.ticketDetail.hidden = false;
   els.ticketDetail.classList.add('open');
   els.ticketDetail.setAttribute('aria-hidden', 'false');
   els.ticketBackdrop.hidden = false;
+
   els.detailBody.innerHTML = `
-    <section class="detail-summary">
-      <div>
-        <h2>${info.teams || 'Partido por confirmar'}</h2>
-        <span class="match-code">${info.matchCode || 'N/A'}</span>
-        <p>${matchLocation(row)}</p>
-        <p>${row.packageTitle || row.loungeId || 'Tipo de boleto'} · ${row.seatingName || row.seatingCode || 'Configuracion'}</p>
+    <div class="detail-top">
+      <div class="detail-top-left">
+        <div class="detail-match-ref">${info.matchCode} · ${info.teams}</div>
+        <div class="detail-zone-row">
+          <span class="detail-zone-dot" style="background:${color}"></span>
+          <span class="detail-zone-name">${zone}</span>
+        </div>
+        <div class="detail-sub">${sub}</div>
       </div>
-      <div class="detail-price">
-        <strong>${money(row.priceMxn)}</strong>
-        <span>${row.available ? `${row.availableQuantity || 0} disponibles` : 'No disponible'}</span>
-        <small>${availabilityFreshness(row)}</small>
+      <div class="detail-top-right">
+        <div class="detail-price">${money(row.priceMxn)}</div>
+        <div class="detail-avail" style="color:${availColor(qty)}">${row.available ? `${qty} disponibles` : 'No disponible'}</div>
       </div>
-    </section>
-    <a class="buy-link" href="${buyUrl}" target="_blank" rel="noreferrer">Abrir en FIFA</a>
-    <section class="detail-grid">
-      ${detailItem('Asiento', row.seatingName || row.seatingCode)}
-      ${detailItem('Codigo de asiento', row.seatingCode)}
-      ${detailItem('Tipo', row.packageShortTitle || row.packageTitle)}
-      ${detailItem('Clase', row.packageClass)}
-      ${detailItem('Precio base', row.packageComparePrice)}
-      ${detailItem('Partido', info.teams)}
-      ${detailItem('Codigo de partido', info.matchCode)}
-      ${detailItem('Venue', info.venue)}
-      ${detailItem('Ciudad', info.city)}
-      ${detailItem('Pais', info.country)}
-      ${detailItem('Fecha', info.matchDate)}
-      ${detailItem('Performance ID', row.performanceId)}
-      ${detailItem('SeatCategoryId', row.rawSeatingSection?.SeatCategoryId)}
-      ${detailItem('AudienceSubCategoryId', row.rawSeatingSection?.AudienceSubCategoryId)}
-    </section>
-    ${row.rawTicketType?.description ? `<p class="detail-copy">${row.rawTicketType.description}</p>` : ''}
-    ${benefits ? `<section class="detail-benefits"><h3>Incluye</h3><ul>${benefits}</ul></section>` : ''}
+    </div>
+    <div class="detail-status-row">
+      <span class="detail-status-badge" style="color:${statusColor};background:${statusBg}">${statusLabel}</span>
+      <span class="detail-status-time">visto hace ${timeAgo(row.checkedAt)}</span>
+    </div>
+    <a class="btn-cta" href="${buyUrl}" target="_blank" rel="noreferrer" style="margin-top:16px">ABRIR EN FIFA →</a>
+    <div class="detail-field-grid">
+      ${fields.map((f) => `
+        <div class="detail-field">
+          <div class="detail-field-label">${f.k}</div>
+          <div class="detail-field-value">${f.v}</div>
+        </div>
+      `).join('')}
+    </div>
+    ${desc ? `<div class="detail-desc">${desc}</div>` : ''}
+    ${benefitsHtml ? `
+      <div class="detail-includes">
+        <div class="detail-includes-title">INCLUYE</div>
+        ${benefitsHtml}
+      </div>
+    ` : ''}
   `;
+}
+
+function renderMatchDetail() {
+  const matchCode = state.drawerMatchCode;
+  const allRows = state.latestCycle?.rows || [];
+  const matchRows = allRows.filter((r) => r.matchCode === matchCode);
+
+  if (matchRows.length === 0) {
+    closeDetail();
+    return;
+  }
+
+  const info = matchInfo(matchRows[0]);
+  const meta = matchLocation(matchRows[0]);
+  const availableRows = matchRows.filter((r) => r.available);
+  const totalQty = matchRows.reduce((sum, r) => sum + Number(r.availableQuantity || 0), 0);
+
+  const zoneMap = {};
+  for (const row of availableRows) {
+    const zone = zoneName(row);
+    const color = zoneColor(row);
+    const price = Number(row.priceMxn || 0);
+    const qty = Number(row.availableQuantity || 0);
+    if (!zoneMap[zone]) {
+      zoneMap[zone] = { name: zone, color, count: 0, min: Infinity };
+    }
+    zoneMap[zone].count += qty;
+    zoneMap[zone].min = Math.min(zoneMap[zone].min, price);
+  }
+  const zones = Object.values(zoneMap);
+
+  els.detailTitle.textContent = 'INFORMACIÓN DEL PARTIDO';
+  els.ticketDetail.hidden = false;
+  els.ticketDetail.classList.add('open');
+  els.ticketDetail.setAttribute('aria-hidden', 'false');
+  els.ticketBackdrop.hidden = false;
+
+  els.detailBody.innerHTML = `
+    <div class="detail-match-ref">${info.matchCode}</div>
+    <div class="detail-match-title">${info.teams}</div>
+    <div class="detail-match-meta">${meta}</div>
+    <div class="detail-match-stats">
+      <div class="detail-match-stat">
+        <div class="label-mono">BOLETOS DETECTADOS</div>
+        <div class="detail-match-stat-value">${totalQty.toLocaleString('en-US')}</div>
+      </div>
+      <div class="detail-match-stat">
+        <div class="label-mono">TIPOS DISPONIBLES</div>
+        <div class="detail-match-stat-value" style="color:var(--green)">${availableRows.length} / ${matchRows.length}</div>
+      </div>
+    </div>
+    ${zones.length > 0 ? `
+      <div class="detail-includes-title" style="margin-top:20px">DISPONIBLE POR ZONA</div>
+      <div class="detail-zone-list">
+        ${zones.map((z) => `
+          <div class="detail-zone-item">
+            <span class="detail-zone-item-dot" style="background:${z.color}"></span>
+            <span class="detail-zone-item-name">${z.name}</span>
+            <span class="detail-zone-item-from">desde ${money(z.min)}</span>
+            <span class="detail-zone-item-count">${z.count}</span>
+          </div>
+        `).join('')}
+      </div>
+    ` : ''}
+  `;
+}
+
+function closeDetail() {
+  state.selectedRow = null;
+  state.selectedKey = null;
+  state.drawerType = null;
+  state.drawerMatchCode = null;
+  renderTicketDetail();
+  renderGameBoard();
 }
 
 function renderEvents() {
@@ -583,7 +815,7 @@ function renderEvents() {
     li.innerHTML = `
       <time>${new Date(event.emittedAt || Date.now()).toLocaleTimeString()}</time>
       <strong>${describeEvent(event)}</strong>
-      <span>${event.error || ''}</span>
+      ${event.error ? `<span class="event-error">${event.error}</span>` : ''}
     `;
     els.eventLog.appendChild(li);
   }
@@ -664,7 +896,7 @@ function renderJobBoard() {
   els.jobBoard.innerHTML = '';
 
   if (orderedJobs.length === 0) {
-    els.jobBoard.innerHTML = '<p class="drawer-empty">Sin trabajos registrados todavia.</p>';
+    els.jobBoard.innerHTML = '<p class="drawer-empty">Sin trabajos registrados todavía.</p>';
     return;
   }
 
@@ -782,18 +1014,8 @@ els.stopTickerButton.addEventListener('click', async () => {
 els.drawerButton.addEventListener('click', openDrawer);
 els.closeDrawerButton.addEventListener('click', closeDrawer);
 els.drawerBackdrop.addEventListener('click', closeDrawer);
-els.ticketBackdrop.addEventListener('click', () => {
-  state.selectedRow = null;
-  state.selectedKey = null;
-  renderTicketDetail();
-  renderGameBoard();
-});
-els.closeDetailButton.addEventListener('click', () => {
-  state.selectedRow = null;
-  state.selectedKey = null;
-  renderTicketDetail();
-  renderGameBoard();
-});
+els.ticketBackdrop.addEventListener('click', closeDetail);
+els.closeDetailButton.addEventListener('click', closeDetail);
 els.availabilityFilter.addEventListener('click', (event) => {
   const button = event.target.closest('button[data-filter]');
 
@@ -802,8 +1024,7 @@ els.availabilityFilter.addEventListener('click', (event) => {
   }
 
   state.filter = button.dataset.filter;
-  state.selectedRow = null;
-  state.selectedKey = null;
+  closeDetail();
   renderFilterButtons();
   render();
 });
@@ -821,7 +1042,7 @@ events.onmessage = (message) => {
   ) {
     refresh();
   } else {
-    els.currentStage.textContent = describeEvent(event);
+    setStatus(state.job);
     renderJobBoard();
     renderEvents();
   }
