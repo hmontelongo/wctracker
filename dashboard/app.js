@@ -472,6 +472,7 @@ function renderAlerts(cycle) {
   els.alertPanel.innerHTML = `
     <div class="alert-summary">
       <div class="alert-summary-count">
+        <span class="alert-dot-summary" style="width:9px;height:9px;border-radius:50%;background:#c8820a;flex:none"></span>
         <strong>${alerts.length}</strong>
         <span>ALERTAS<br>NUEVAS</span>
       </div>
