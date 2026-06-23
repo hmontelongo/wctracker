@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>La boutique de Jaime</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Monitor del Mundial</p>
+          <h1>La boutique de Jaime</h1>
+        </div>
+        <div class="top-actions">
+          <div class="status-strip">
+            <span id="statusDot" class="status-dot idle"></span>
+            <span id="statusText">En espera</span>
+          </div>
+          <button id="startTickerButton" data-admin-only hidden>Iniciar</button>
+          <button id="stopTickerButton" class="secondary" data-admin-only hidden>Detener</button>
+          <button id="drawerButton" class="secondary" data-admin-only hidden>Sistema</button>
+        </div>
+      </header>
+
+      <section class="live-overview">
+        <div class="freshness-card">
+          <span>Frescura</span>
+          <strong id="freshnessText">Sin datos</strong>
+          <small id="lastUpdated">Sin ciclos aun</small>
+        </div>
+        <div class="stage-card">
+          <span>Estado actual</span>
+          <strong id="currentStage">Esperando inicio</strong>
+          <small>Tienda activa: <b id="shopContextLabel">Mexico</b>. Se revisan todos los partidos comprables desde esa tienda.</small>
+        </div>
+      </section>
+
+      <section class="metrics" aria-label="Resumen del ciclo">
+        <div>
+          <span>Partidos detectados</span>
+          <strong id="matchesFound">0</strong>
+        </div>
+        <div>
+          <span>Partidos revisados</span>
+          <strong id="matchesScanned">0</strong>
+        </div>
+        <div>
+          <span>Tipos de boleto</span>
+          <strong id="rowCount">0</strong>
+        </div>
+        <div>
+          <span>Disponibles</span>
+          <strong id="availableCount">0</strong>
+        </div>
+        <div>
+          <span>Nuevas alertas</span>
+          <strong id="alertCount">0</strong>
+        </div>
+      </section>
+
+      <section id="alertPanel" class="alert-panel" hidden></section>
+
+      <section class="board-toolbar">
+        <div>
+          <h2>Partidos y boletos</h2>
+          <p>Disponibilidad agrupada por partido. Cada tarjeta muestra los tipos de boleto disponibles dentro del partido.</p>
+        </div>
+        <div id="availabilityFilter" class="filter-pills" role="group" aria-label="Filtro de disponibilidad">
+          <button type="button" data-filter="available" class="active">Disponibles</button>
+          <button type="button" data-filter="all">Todos</button>
+          <button type="button" data-filter="unavailable">No disponibles</button>
+        </div>
+      </section>
+
+      <section id="gameBoard" class="game-board"></section>
+
+    </main>
+
+    <aside id="ticketDetail" class="ticket-drawer" hidden aria-hidden="true">
+      <div class="panel-head">
+        <h2>Detalle del boleto</h2>
+        <button id="closeDetailButton" class="secondary">Cerrar</button>
+      </div>
+      <div id="detailBody" class="detail-body"></div>
+    </aside>
+    <div id="ticketBackdrop" class="drawer-backdrop" hidden></div>
+
+    <aside id="systemDrawer" class="drawer" aria-hidden="true">
+      <div class="drawer-head">
+        <div>
+          <p class="eyebrow">Operacion</p>
+          <h2>Sistema</h2>
+        </div>
+        <button id="closeDrawerButton" class="secondary">Cerrar</button>
+      </div>
+
+      <section class="drawer-section">
+        <h3>Configuracion de depuracion</h3>
+        <div class="controls">
+          <label>
+            Tienda / comprador
+            <input id="countryInput" value="Mexico" autocomplete="off">
+          </label>
+          <label>
+            Trabajos paralelos
+            <input id="concurrencyInput" type="number" min="1" max="10" value="6">
+          </label>
+          <label>
+            Intervalo ms
+            <input id="intervalInput" type="number" min="30000" step="1000" value="60000">
+          </label>
+          <button id="runCycleButton" class="secondary">Ejecutar un ciclo manual</button>
+        </div>
+      </section>
+
+      <section class="drawer-section">
+        <h3>Trabajos del ciclo</h3>
+        <div id="jobBoard" class="job-board"></div>
+      </section>
+
+      <section class="drawer-section">
+        <h3>Linea de tiempo</h3>
+        <ol id="eventLog"></ol>
+      </section>
+
+      <section class="drawer-section">
+        <h3>Resumen tecnico</h3>
+        <pre id="cycleOutput">{}</pre>
+      </section>
+    </aside>
+    <div id="drawerBackdrop" class="drawer-backdrop" hidden></div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

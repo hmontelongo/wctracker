@@ -1,0 +1,20 @@
+{
+  "name": "zenrows-mini-project",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:universal": "node scripts/universal-scraper-smoke.mjs",
+    "test:browser": "node scripts/scraping-browser-smoke.mjs",
+    "test:zenrows": "npm run test:universal && npm run test:browser",
+    "probe:fifa:universal": "node scripts/fifa-universal-probe.mjs",
+    "probe:fifa:browser": "node scripts/fifa-browser-probe.mjs",
+    "discover:fifa": "node scripts/fifa-discover-availability.mjs",
+    "ticker:fifa": "node scripts/fifa-ticket-ticker.mjs",
+    "db:init": "node scripts/db-init.mjs",
+    "dashboard": "node scripts/dashboard-server.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
