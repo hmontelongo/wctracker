@@ -470,13 +470,18 @@ function renderAlerts(cycle) {
 
   const retMin = Math.round(alertRetentionMs(cycle) / 60000);
   els.alertPanel.innerHTML = `
-    <div class="alert-summary">
+    <div class="alert-summary alert-summary-desktop">
       <div class="alert-summary-count">
-        <span class="alert-dot-summary" style="width:9px;height:9px;border-radius:50%;background:#c8820a;flex:none"></span>
+        <span style="width:9px;height:9px;border-radius:50%;background:#c8820a;flex:none"></span>
         <strong>${alerts.length}</strong>
         <span>ALERTAS<br>NUEVAS</span>
       </div>
       <p>Boletos que aparecieron o subieron stock en los últimos ${retMin} minutos.</p>
+    </div>
+    <div class="alert-summary-mobile">
+      <span style="width:7px;height:7px;border-radius:50%;background:#c8820a;flex:none"></span>
+      <span class="alert-mobile-count">${alerts.length} alertas nuevas</span>
+      <span class="alert-mobile-sub">aparecieron o subieron stock</span>
     </div>
     <div class="alert-grid"></div>
   `;
@@ -589,16 +594,21 @@ function renderGameBoard() {
           freshnessHtml = `<span class="fresh-tag-none">${freshness.text}</span>`;
         }
 
-        const button = document.createElement('button');
-        button.type = 'button';
+        const button = document.createElement('div');
+        button.role = 'button';
+        button.tabIndex = 0;
         button.className = `ticket-cell${row.available ? '' : ' unavailable'}${state.selectedKey === key ? ' selected' : ''}`;
         button.innerHTML = `
           <span class="zone-dot" style="background:${color}"></span>
-          <span class="ticket-zone">${zone}</span>
-          <span class="ticket-sub">${sub}</span>
-          <span class="ticket-price">${money(row.priceMxn)}</span>
-          <span class="ticket-avail" style="color:${availColor(qty)}">${row.available ? `${qty} disp.` : 'No disponible'}</span>
-          <span class="ticket-freshness">${freshnessHtml}</span>
+          <div class="ticket-info">
+            <span class="ticket-zone">${zone}</span>
+            <span class="ticket-sub">${sub}</span>
+            <span class="ticket-freshness">${freshnessHtml}</span>
+          </div>
+          <div class="ticket-nums">
+            <span class="ticket-price">${money(row.priceMxn)}</span>
+            <span class="ticket-avail" style="color:${availColor(qty)}">${row.available ? `${qty} disp.` : 'No disponible'}</span>
+          </div>
         `;
         button.addEventListener('click', () => {
           state.selectedRow = row;

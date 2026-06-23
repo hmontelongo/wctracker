@@ -150,6 +150,7 @@ button:disabled { cursor: wait; opacity: .5; }
   flex: none;
 }
 .brand-name { font-size: 14px; font-weight: 600; line-height: 1.1; }
+.brand-short { display: none; }
 .brand-sub { font: 500 9px/1.2 var(--font-mono); letter-spacing: .18em; color: var(--muted-light); }
 .topbar-right {
   display: flex;
@@ -288,6 +289,7 @@ button:disabled { cursor: wait; opacity: .5; }
   margin-top: 8px;
   line-height: 1.4;
 }
+.alert-summary-mobile { display: none; }
 .alert-grid {
   flex: 1;
   display: grid;
@@ -502,7 +504,7 @@ button:disabled { cursor: wait; opacity: .5; }
 .ticket-cell:hover { background: #faf9f3; }
 .ticket-cell.unavailable { opacity: .55; }
 .ticket-cell.selected { background: #f3eedb; }
-.ticket-cell .zone-dot {
+.ticket-cell > .zone-dot {
   display: inline-block;
   vertical-align: middle;
   margin-right: 6px;
@@ -511,9 +513,6 @@ button:disabled { cursor: wait; opacity: .5; }
   display: inline;
   font-size: 12.5px;
   font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   vertical-align: middle;
 }
 .ticket-sub {
@@ -522,9 +521,6 @@ button:disabled { cursor: wait; opacity: .5; }
   color: var(--muted);
   margin-top: 5px;
   margin-bottom: 8px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .ticket-price {
   display: block;
@@ -911,14 +907,16 @@ pre {
   /* --- Shell & Topbar --- */
   .topbar { padding: 0 14px; height: 50px; overflow: hidden; }
   .brand-sub { display: none; }
+  .brand-full { display: none; }
+  .brand-short { display: inline; }
   .brand-name { font-size: 14px; font-weight: 700; }
-  .topbar-right { flex-shrink: 0; gap: 6px; }
-  .status-pill { font-size: 11px; padding: 4px 9px; border-radius: 999px; }
+  .topbar-right { flex-shrink: 1; gap: 6px; min-width: 0; }
+  .status-pill { font-size: 11px; padding: 4px 9px; border-radius: 999px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   /* --- Stat Strip: 3 items only --- */
-  .stat-strip { padding: 0; overflow: hidden; }
+  .stat-strip { padding: 0 16px; overflow: hidden; display: flex; }
   .stat-item[data-priority="secondary"] { display: none; }
-  .stat-item { flex: 1; padding: 9px 14px; }
+  .stat-item { flex: 1; padding: 9px 14px; min-width: 0; }
   .stat-item + .stat-item { border-left: 1px solid var(--border-inner); }
   .stat-divider { display: none; }
   .stat-label { font-size: 8.5px; letter-spacing: .1em; }
@@ -926,44 +924,26 @@ pre {
 
   /* --- Alert Band: horizontal carousel --- */
   .alert-band {
-    flex-direction: column;
+    display: block;
     padding: 14px 0 6px;
-    gap: 9px;
-    overflow: hidden;
     background: transparent;
     border-bottom: none;
+    overflow: visible;
   }
-  .alert-summary {
-    width: auto;
-    padding: 0 16px;
+  .alert-summary-desktop { display: none; }
+  .alert-summary-mobile {
     display: flex;
     align-items: center;
     gap: 7px;
+    padding: 0 16px;
+    margin-bottom: 9px;
   }
-  .alert-summary-count {
-    gap: 7px;
-  }
-  .alert-summary-count strong {
-    font-size: 13px;
-    font-weight: 700;
-    font-family: var(--font-sans);
-  }
-  .alert-summary-count span {
-    font-size: 11px;
-    color: var(--muted-dark);
-  }
-  .alert-summary-count .alert-dot-summary {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--amber-dot);
-  }
-  .alert-summary p { display: none; }
+  .alert-mobile-count { font-size: 12.5px; font-weight: 700; color: var(--ink); }
+  .alert-mobile-sub { font-size: 11px; color: var(--muted-dark); }
   .alert-grid {
     display: flex;
     gap: 9px;
     overflow-x: auto;
-    overflow-y: hidden;
     padding: 0 16px 4px;
     -webkit-overflow-scrolling: touch;
   }
@@ -973,8 +953,8 @@ pre {
     border-radius: 11px;
     padding: 11px 13px;
   }
-  .alert-grid::-webkit-scrollbar { height: 6px; }
-  .alert-grid::-webkit-scrollbar-thumb { background: #cfccc1; border-radius: 6px; }
+  .alert-grid { scrollbar-width: none; -ms-overflow-style: none; }
+  .alert-grid::-webkit-scrollbar { display: none; }
 
   /* --- Board Toolbar & Filter --- */
   .board-toolbar {
@@ -984,8 +964,8 @@ pre {
     gap: 10px;
   }
   .board-toolbar-title { font-size: 14px; }
-  .seg-control { width: 100%; }
-  .seg-control button { flex: 1; text-align: center; padding: 7px 4px; font-size: 12px; }
+  .seg-control { width: 100%; overflow: hidden; }
+  .seg-control button { flex: 1; text-align: center; padding: 7px 2px; font-size: 11.5px; white-space: nowrap; min-width: 0; }
 
   /* --- Game Board --- */
   .game-board { padding: 0 16px 24px; gap: 12px; }
@@ -1021,56 +1001,34 @@ pre {
     border-top: none;
   }
   .ticket-cell {
-    display: grid;
-    grid-template-columns: auto 1fr auto;
-    grid-template-rows: auto auto auto;
-    column-gap: 11px;
-    row-gap: 0;
-    align-items: baseline;
+    display: flex;
+    align-items: center;
+    gap: 11px;
     padding: 11px 14px;
     border-right: none;
     border-bottom: 1px solid #f4f2ec;
   }
-  .ticket-cell .zone-dot {
-    grid-column: 1;
-    grid-row: 1 / 4;
-    align-self: center;
+  .ticket-cell > .zone-dot {
+    flex: none;
     width: 8px;
     height: 8px;
     margin: 0;
   }
-  .ticket-zone {
-    grid-column: 2;
-    grid-row: 1;
+  .ticket-info {
     display: block;
-    font-size: 13px;
-    font-weight: 600;
+    flex: 1;
+    min-width: 0;
   }
-  .ticket-sub {
-    grid-column: 2;
-    grid-row: 2;
-    margin: 0;
-    font-size: 10px;
-  }
-  .ticket-freshness {
-    grid-column: 2;
-    grid-row: 3;
-    margin-top: 5px;
-  }
-  .ticket-price {
-    grid-column: 3;
-    grid-row: 1;
+  .ticket-nums {
+    display: block;
+    flex: none;
     text-align: right;
-    font-size: 14px;
-    font-weight: 600;
   }
-  .ticket-avail {
-    grid-column: 3;
-    grid-row: 2;
-    text-align: right;
-    font-size: 10.5px;
-    margin-top: 2px;
-  }
+  .ticket-zone { display: block; font-size: 13px; }
+  .ticket-sub { margin: 0; font-size: 10px; }
+  .ticket-freshness { margin-top: 5px; }
+  .ticket-price { font-size: 14px; }
+  .ticket-avail { font-size: 10.5px; margin-top: 2px; }
 
   /* --- Detail Drawer → Bottom Sheet --- */
   .detail-drawer {

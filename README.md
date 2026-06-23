@@ -73,7 +73,8 @@ FIFA discovery:
 
 FIFA ticker:
 
-- rediscovers match cards from the FIFA page every cycle
+- runs fast polls against known FIFA lounge targets between full discovery cycles
+- rediscovers match cards from the FIFA page on the configured full-discovery cadence
 - creates one match job per purchasable/clickable match card exposed by the selected shop context
 - runs match jobs in parallel, bounded by `FIFA_MATCH_CONCURRENCY`
 - each job opens its match and captures all ticket-type rows
@@ -85,7 +86,7 @@ FIFA ticker:
 
 The selected country is the FIFA buyer/shop context, not a match-location filter. Each cycle scans every purchasable/clickable match card exposed by that shop, regardless of where the match is played. Cards explicitly routed to another country shop, marked currently unavailable, or disabled are skipped. `FIFA_MATCH_CONCURRENCY` controls how many match jobs run in parallel. `FIFA_DISCOVERY_ATTEMPTS` controls retries before a no-card page state is treated as a failed cycle.
 
-`FIFA_FAST_POLL_ENABLED=0` keeps experimental target polling disabled. Direct page fetches against `/next-api/lounges` returned 401 in validation, so full browser discovery remains the reliable path until request headers/cookies are captured correctly.
+`FIFA_FAST_POLL_ENABLED=1` keeps freshness low by reusing known match targets between full discovery cycles. Fast polling still opens the FIFA shop page first to establish the browser context, but it does not wait for the full match-card list before fetching known `/next-api/lounges` targets. `FIFA_FULL_DISCOVERY_EVERY` controls how often the slower discovery path refreshes the target list.
 
 The local dashboard process runs one coordinator cycle at a time. A cycle discovers the purchasable match cards, then runs bounded parallel match jobs inside the same Node process. `FIFA_MATCH_JOB_ATTEMPTS` controls per-match retries for transient browser/navigation failures. Starting multiple dashboard/ticker processes can overlap coordinators because the in-memory guard is per process; use a shared SQLite/D1 lock before intentionally running multiple coordinators against the same database.
 

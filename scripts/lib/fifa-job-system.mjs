@@ -258,7 +258,7 @@ async function waitForDocumentReady(cdp, sessionId) {
   `, 15000);
 }
 
-export async function openShopAndChooseCountry(cdp, sessionId, config, emit = () => {}) {
+export async function openShopAndChooseCountry(cdp, sessionId, config, emit = () => {}, options = {}) {
   emit({ event: 'shop_navigation_started', url: config.shopUrl });
   const loaded = cdp.waitFor('Page.loadEventFired', sessionId, 8000).catch((error) => ({
     timeout: error.message,
@@ -305,6 +305,21 @@ export async function openShopAndChooseCountry(cdp, sessionId, config, emit = ()
         source: 'proxy-timeout-page',
         textPreview: state.textPreview,
       },
+    };
+  }
+
+  if (options.waitForMatchCards === false) {
+    const readiness = {
+      ready: true,
+      cardCount: null,
+      source: 'shop-context-only',
+    };
+    emit({ event: 'shop_context_ready', source: readiness.source });
+
+    return {
+      ...state,
+      documentState,
+      readiness,
     };
   }
 
@@ -956,7 +971,9 @@ export async function runFifaFastCycle(config, previousState = null, emit = () =
   let initialState = null;
 
   try {
-    initialState = await openShopAndChooseCountry(session.cdp, session.sessionId, config, emit);
+    initialState = await openShopAndChooseCountry(session.cdp, session.sessionId, config, emit, {
+      waitForMatchCards: false,
+    });
     emit({ event: 'fast_targets_fetch_started', targetCount: knownTargets.length });
     const captures = await fetchKnownTargetsInPage(
       session.cdp,
