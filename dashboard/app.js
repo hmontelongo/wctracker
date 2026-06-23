@@ -117,13 +117,48 @@ function alertTimestamp(row) {
   if (row?.lastAlertAt) return row.lastAlertAt;
   if (row?.availabilityFreshness === 'new') return row.becameAvailableAt || row.lastChangedAt || row.checkedAt || null;
   if (row?.availabilityFreshness === 'increased') return row.lastChangedAt || row.checkedAt || null;
+  if (['decreased', 'unavailable', 'price_changed'].includes(row?.availabilityFreshness)) return row.lastChangedAt || row.checkedAt || null;
   return null;
 }
 
 function alertReason(row) {
-  if (['new', 'increased'].includes(row?.alertReason)) return row.alertReason;
-  if (['new', 'increased'].includes(row?.availabilityFreshness)) return row.availabilityFreshness;
+  const knownReasons = ['new', 'increased', 'decreased', 'unavailable', 'price_changed'];
+  if (knownReasons.includes(row?.alertReason)) return row.alertReason;
+  if (knownReasons.includes(row?.availabilityFreshness)) return row.availabilityFreshness;
   return null;
+}
+
+function quantityLabel(row) {
+  const qty = Number(row?.availableQuantity || 0);
+  if (qty === 1) return '1 disp.';
+  return `${qty.toLocaleString('en-US')} disp.`;
+}
+
+function alertReasonMeta(row) {
+  const reason = alertReason(row);
+  const qty = quantityLabel(row);
+
+  if (reason === 'new') {
+    return { type: 'new', label: 'Nuevo', detail: `Apareció con ${qty}` };
+  }
+
+  if (reason === 'increased') {
+    return { type: 'increased', label: 'Subió stock', detail: `Ahora ${qty}` };
+  }
+
+  if (reason === 'decreased') {
+    return { type: 'decreased', label: 'Bajó stock', detail: `Ahora ${qty}` };
+  }
+
+  if (reason === 'unavailable') {
+    return { type: 'unavailable', label: 'Sin stock', detail: 'Dejó de estar disponible' };
+  }
+
+  if (reason === 'price_changed') {
+    return { type: 'price_changed', label: 'Cambió precio', detail: `Ahora ${money(row?.priceMxn)}` };
+  }
+
+  return { type: 'change', label: 'Cambio', detail: 'Cambio detectado' };
 }
 
 function isActiveAlert(row, cycle, now) {
@@ -143,7 +178,7 @@ function freshnessInfo(row, cycle, now) {
     return { text: row.checkedAt ? `Revisado ${timeAgo(row.checkedAt, now)}` : 'No disponible', type: 'none' };
   }
   if (isActiveAlert(row, cycle, now)) {
-    const label = alertReason(row) === 'increased' ? 'Más stock' : 'Nuevo';
+    const label = alertReasonMeta(row).label;
     return { text: `${label} hace ${timeAgo(alertTimestamp(row), now)}`, type: 'new' };
   }
   return { text: row.checkedAt ? `Revisado · ${timeAgo(row.checkedAt, now)}` : 'Disponible', type: 'rev' };
@@ -178,7 +213,6 @@ function groupRowsByMatch(rows, cycle) {
 
 function ticketSort(a, b) {
   if (a.available !== b.available) return a.available ? -1 : 1;
-  if (Number(a.availableQuantity || 0) !== Number(b.availableQuantity || 0)) return Number(b.availableQuantity || 0) - Number(a.availableQuantity || 0);
   return Number(a.priceMxn || 0) - Number(b.priceMxn || 0);
 }
 
@@ -277,10 +311,48 @@ function computeJobs(events, job, cycle) {
 
 async function postJson(path, body = {}) {
   const r = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const p = await r.json().catch(() => ({}));
   if (!r.ok && r.status !== 202) {
-    const p = await r.json().catch(() => ({}));
     throw new Error(p.error || `Request failed: ${r.status}`);
   }
+  return p;
+}
+
+async function deleteJson(path) {
+  const r = await fetch(path, { method: 'DELETE' });
+  const p = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(p.error || `Request failed: ${r.status}`);
+  return p;
+}
+
+function alertRuleConditionOptions(row) {
+  if (!row?.available) {
+    return [
+      { value: 'becomes_available', label: 'Cuando esté disponible' },
+      { value: 'any_change', label: 'Cualquier cambio' },
+    ];
+  }
+
+  return [
+    { value: 'stock_increase', label: 'Si sube stock' },
+    { value: 'stock_change', label: 'Si cambia stock' },
+    { value: 'price_change', label: 'Si cambia precio' },
+    { value: 'any_change', label: 'Cualquier cambio' },
+  ];
+}
+
+function alertRuleConditionLabel(condition) {
+  return {
+    becomes_available: 'Cuando esté disponible',
+    stock_increase: 'Si sube stock',
+    stock_change: 'Si cambia stock',
+    price_change: 'Si cambia precio',
+    any_change: 'Cualquier cambio',
+  }[condition] || condition || 'Alerta';
+}
+
+function suggestedAlertCondition(row) {
+  return row?.available ? 'stock_increase' : 'becomes_available';
 }
 
 document.addEventListener('alpine:init', () => {
@@ -296,7 +368,14 @@ document.addEventListener('alpine:init', () => {
     drawerMatchCode: null,
     systemOpen: false,
     queue: null,
+    notifications: null,
+    alertRules: [],
+    alertCondition: 'becomes_available',
+    alertRuleSaving: false,
+    alertRuleError: '',
+    alertRuleSavedAt: null,
     pulseMatches: {},
+    collapsed: {},
     isAdmin: location.pathname.replace(/\/$/, '').endsWith('/admin') || new URLSearchParams(location.search).has('admin'),
     visitorCountry: 'Mexico',
     matchConcurrency: 6,
@@ -334,12 +413,21 @@ document.addEventListener('alpine:init', () => {
     },
 
     async refresh() {
-      const r = await fetch('/api/state');
-      const p = await r.json();
+      const [stateResponse, rulesResponse] = await Promise.all([
+        fetch('/api/state'),
+        fetch('/api/alert-rules').catch(() => null),
+      ]);
+      const p = await stateResponse.json();
       this.latestCycle = p.latestCycle;
       this.job = p.job;
       this.queue = p.queue || null;
+      this.notifications = p.notifications || null;
       if (p.job?.events?.length) this.events = p.job.events;
+
+      if (rulesResponse?.ok) {
+        const rulesPayload = await rulesResponse.json();
+        this.alertRules = rulesPayload.rules || [];
+      }
     },
 
     requestBody() {
@@ -386,6 +474,8 @@ document.addEventListener('alpine:init', () => {
       return 'stat-value--green';
     },
     isScanning(matchCode) { return Boolean(this.pulseMatches[matchCode]); },
+    matchHasAlerts(matchCode) { return this.alerts.some((r) => r.matchCode === matchCode); },
+    isRowAlert(row) { return isActiveAlert(row, this.latestCycle, this.now); },
     get matchesFound() { return this.latestCycle?.matchCardsFound ?? 0; },
     get matchesScanned() { return this.latestCycle?.matchCardsScanned ?? 0; },
     get rowCount() { return this.latestCycle?.rowCount ?? 0; },
@@ -408,6 +498,15 @@ document.addEventListener('alpine:init', () => {
       return `${zone} · ${seat}`;
     },
     alertQty(row) { return Number(row.availableQuantity || 0); },
+    alertPlaceLine(row) {
+      const zone = zoneName(row);
+      const seat = row.seatingName || row.seatingCode || '';
+      if (!seat || seat === zone) return zone;
+      return `${zone} · ${seat}`;
+    },
+    alertReasonType(row) { return alertReasonMeta(row).type; },
+    alertReasonLabel(row) { return alertReasonMeta(row).label; },
+    alertReasonDetail(row) { return alertReasonMeta(row).detail; },
 
     // --- Filters & Matches ---
     setFilter(f) { this.filter = f; this.closeDetail(); },
@@ -440,7 +539,29 @@ document.addEventListener('alpine:init', () => {
       return all.reduce((s, r) => s + Number(r.availableQuantity || 0), 0);
     },
 
-    sortedTickets(m) { return [...m.rows].sort(ticketSort); },
+    sortedTickets(m) {
+      const sorted = [...m.rows].sort(ticketSort);
+      const maxAvail = Math.max(1, ...sorted.map((r) => Number(r.availableQuantity || 0)));
+      sorted.forEach((r, i) => {
+        const q = Number(r.availableQuantity || 0);
+        r._pct = Math.max(8, Math.round(q / maxAvail * 100));
+        r._barColor = q <= 0 ? '#d8d4ca' : q <= 2 ? '#c0392b' : '#b3afa2';
+        r._rowBg = i % 2 ? '#ffffff' : '#faf9f5';
+      });
+      return sorted;
+    },
+
+    isOpen(matchCode) { return !this.collapsed[matchCode]; },
+    toggleMatch(matchCode) { this.collapsed = { ...this.collapsed, [matchCode]: !this.collapsed[matchCode] }; },
+    get anyOpen() { return this.matches.some((m) => this.isOpen(m.matchCode)); },
+    get toggleAllLabel() { return this.anyOpen ? 'Colapsar' : 'Expandir'; },
+    toggleAll() {
+      const nv = {};
+      if (this.anyOpen) this.matches.forEach((m) => nv[m.matchCode] = true);
+      this.collapsed = nv;
+    },
+    chevronStyle(matchCode) { return this.isOpen(matchCode) ? 'rotate(0deg)' : 'rotate(-90deg)'; },
+    headBorder(matchCode) { return this.isOpen(matchCode) ? '#e3e0d6' : 'transparent'; },
 
     // --- Ticket helpers ---
     tZoneColor(row) { return zoneColor(row); },
@@ -450,7 +571,6 @@ document.addEventListener('alpine:init', () => {
     tAvailColor(row) { return availColor(this.tQty(row)); },
     tAvailLabel(row) { return row.available ? `${this.tQty(row)} disp.` : 'No disponible'; },
     tFreshness(row) { return freshnessInfo(row, this.latestCycle, this.now); },
-    tPulse(row) { return this.tFreshness(row).type === 'new'; },
     tKey(row) { return ticketKey(row); },
     tSelected(row) { return this.selectedKey === ticketKey(row); },
 
@@ -460,6 +580,9 @@ document.addEventListener('alpine:init', () => {
       this.selectedKey = ticketKey(row);
       this.drawerType = 'ticket';
       this.drawerMatchCode = null;
+      this.alertCondition = suggestedAlertCondition(row);
+      this.alertRuleError = '';
+      this.alertRuleSavedAt = null;
     },
 
     openMatchInfo(matchCode) {
@@ -493,10 +616,11 @@ document.addEventListener('alpine:init', () => {
     get dBuyUrl() { return this.dRow?.fifaShopUrl || this.latestCycle?.shopUrl || '#'; },
     get dStatusLabel() {
       if (!this.dRow) return '';
-      if (this.dFreshness.type === 'new') return alertReason(this.dRow) === 'increased' ? 'Más stock' : 'Nuevo';
+      if (this.dFreshness.type === 'new') return alertReasonMeta(this.dRow).label;
       if (!this.dRow.available) return 'No disponible';
       return 'Revisado';
     },
+    get dReasonDetail() { return this.dFreshness.type === 'new' ? alertReasonMeta(this.dRow).detail : ''; },
     get dStatusColor() {
       if (!this.dRow) return '#999';
       if (!this.dRow.available) return '#9a9688';
@@ -522,6 +646,68 @@ document.addEventListener('alpine:init', () => {
     },
     get dDesc() { return this.dRow?.rawTicketType?.description || ZONE_DESCRIPTIONS[this.dZone] || ''; },
     get dDetails() { return Array.isArray(this.dRow?.rawTicketType?.details) ? this.dRow.rawTicketType.details : []; },
+    get dAlertRules() {
+      if (!this.dRow) return [];
+      const key = ticketKey(this.dRow);
+      return this.alertRules.filter((rule) => rule.rowKey === key);
+    },
+    get dHasAlertRule() { return this.dAlertRules.length > 0; },
+    get dPrimaryAlertRule() { return this.dAlertRules[0] || null; },
+    get dAlertOptions() { return alertRuleConditionOptions(this.dRow); },
+    get dAlertSummary() {
+      if (this.dHasAlertRule) return alertRuleConditionLabel(this.dPrimaryAlertRule.condition);
+      return this.dRow?.available ? 'Te aviso si cambia y aviso al grupo.' : 'Te aviso en cuanto aparezca y aviso al grupo.';
+    },
+    get dAlertSavedText() {
+      if (!this.alertRuleSavedAt) return '';
+      return `Guardado hace ${timeAgo(this.alertRuleSavedAt, this.now)}`;
+    },
+    conditionLabel(condition) { return alertRuleConditionLabel(condition); },
+    alertRulePayload() {
+      const row = this.dRow;
+      const info = this.dInfo || {};
+      return {
+        row,
+        rowKey: ticketKey(row),
+        matchCode: row.matchCode,
+        performanceId: row.performanceId,
+        loungeId: row.loungeId,
+        seatingCode: row.seatingCode,
+        packageTitle: row.packageTitle,
+        seatingName: row.seatingName,
+        condition: this.alertCondition,
+        label: [info.matchCode, info.teams, zoneName(row), row.seatingName || row.seatingCode].filter(Boolean).join(' · '),
+      };
+    },
+    async createTicketAlertRule() {
+      if (!this.dRow || this.alertRuleSaving) return;
+      this.alertRuleSaving = true;
+      this.alertRuleError = '';
+      try {
+        const payload = await postJson('/api/alert-rules', this.alertRulePayload());
+        const rule = payload.rule;
+        this.alertRules = [rule, ...this.alertRules.filter((r) => !(r.id === rule.id || (r.rowKey === rule.rowKey && r.condition === rule.condition)))];
+        this.alertRuleSavedAt = new Date().toISOString();
+      } catch (error) {
+        this.alertRuleError = error.message;
+      } finally {
+        this.alertRuleSaving = false;
+      }
+    },
+    async deleteTicketAlertRule(rule) {
+      if (!rule || this.alertRuleSaving) return;
+      this.alertRuleSaving = true;
+      this.alertRuleError = '';
+      try {
+        await deleteJson(`/api/alert-rules/${rule.id}`);
+        this.alertRules = this.alertRules.filter((r) => r.id !== rule.id);
+        this.alertRuleSavedAt = null;
+      } catch (error) {
+        this.alertRuleError = error.message;
+      } finally {
+        this.alertRuleSaving = false;
+      }
+    },
 
     // Match detail computed
     get dmRows() {
@@ -561,6 +747,9 @@ document.addEventListener('alpine:init', () => {
         trabajosParalelos: c.matchConcurrency, tiposDeBoleto: c.rowCount,
         disponibles: c.availableRowCount, alertasActivas: this.alertCount,
         retencionAlertasMs: c.alertRetentionMs || DEFAULT_ALERT_RETENTION_MS,
+        telegramListo: Boolean(this.notifications?.telegramReady),
+        notificacionesTelegram: this.notifications?.telegram || {},
+        reglasActivas: this.alertRules.length,
       }, null, 2);
     },
 
