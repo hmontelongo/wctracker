@@ -12,6 +12,7 @@ ZENROWS_TARGET_URL=https://example.com
 ZENROWS_BROWSER_TARGET_URL=https://example.com
 FIFA_VISITOR_COUNTRY=Mexico
 FIFA_MATCH_CONCURRENCY=6
+FIFA_MATCH_JOB_ATTEMPTS=2
 FIFA_FAST_POLL_ENABLED=0
 FIFA_FAST_FETCH_CONCURRENCY=8
 FIFA_FULL_DISCOVERY_EVERY=10
@@ -85,6 +86,8 @@ FIFA ticker:
 The selected country is the FIFA buyer/shop context, not a match-location filter. Each cycle scans every purchasable/clickable match card exposed by that shop, regardless of where the match is played. Cards explicitly routed to another country shop, marked currently unavailable, or disabled are skipped. `FIFA_MATCH_CONCURRENCY` controls how many match jobs run in parallel. `FIFA_DISCOVERY_ATTEMPTS` controls retries before a no-card page state is treated as a failed cycle.
 
 `FIFA_FAST_POLL_ENABLED=0` keeps experimental target polling disabled. Direct page fetches against `/next-api/lounges` returned 401 in validation, so full browser discovery remains the reliable path until request headers/cookies are captured correctly.
+
+The local dashboard process runs one coordinator cycle at a time. A cycle discovers the purchasable match cards, then runs bounded parallel match jobs inside the same Node process. `FIFA_MATCH_JOB_ATTEMPTS` controls per-match retries for transient browser/navigation failures. Starting multiple dashboard/ticker processes can overlap coordinators because the in-memory guard is per process; use a shared SQLite/D1 lock before intentionally running multiple coordinators against the same database.
 
 Dashboard:
 

@@ -32,6 +32,7 @@ export function configFromEnv(apiKey, overrides = {}) {
   const fullDiscoveryEvery = Math.max(0, Number(overrides.fullDiscoveryEvery ?? process.env.FIFA_FULL_DISCOVERY_EVERY ?? 10));
   const fastFetchConcurrency = Math.max(1, Number(overrides.fastFetchConcurrency || process.env.FIFA_FAST_FETCH_CONCURRENCY || matchConcurrency));
   const alertRetentionMs = Math.max(0, Number(overrides.alertRetentionMs ?? process.env.FIFA_ALERT_RETENTION_MS ?? 10 * 60 * 1000));
+  const matchJobAttempts = Math.max(1, Number(overrides.matchJobAttempts ?? process.env.FIFA_MATCH_JOB_ATTEMPTS ?? 2));
   const statePath = overrides.statePath || process.env.FIFA_STATE_PATH || DEFAULT_STATE_PATH;
   const latestCyclePath = overrides.latestCyclePath || process.env.FIFA_LATEST_CYCLE_PATH || DEFAULT_LATEST_CYCLE_PATH;
   const browserUrl = buildBrowserUrl(apiKey, {
@@ -52,6 +53,7 @@ export function configFromEnv(apiKey, overrides = {}) {
     fullDiscoveryEvery,
     fastFetchConcurrency,
     alertRetentionMs,
+    matchJobAttempts,
     statePath,
     latestCyclePath,
     browserUrl,
@@ -100,6 +102,52 @@ export async function evaluate(cdp, sessionId, expression, timeoutMs = 45000) {
   return result.result?.value;
 }
 
+function createCaptureBucket() {
+  const captures = [];
+  const waiters = new Set();
+
+  Object.defineProperties(captures, {
+    pushCapture: {
+      enumerable: false,
+      value(capture) {
+        captures.push(capture);
+
+        for (const waiter of [...waiters]) {
+          if (waiter.predicate(capture)) {
+            clearTimeout(waiter.timeout);
+            waiters.delete(waiter);
+            waiter.resolve(capture);
+          }
+        }
+      },
+    },
+    waitFor: {
+      enumerable: false,
+      value(predicate, timeoutMs) {
+        const existing = captures.find(predicate);
+
+        if (existing) {
+          return Promise.resolve(existing);
+        }
+
+        return new Promise((resolve) => {
+          const waiter = {
+            predicate,
+            resolve,
+            timeout: setTimeout(() => {
+              waiters.delete(waiter);
+              resolve(null);
+            }, timeoutMs),
+          };
+          waiters.add(waiter);
+        });
+      },
+    },
+  });
+
+  return captures;
+}
+
 function installNetworkCapture(cdp, sessionId, bucket) {
   const requests = new Map();
 
@@ -129,7 +177,7 @@ function installNetworkCapture(cdp, sessionId, bucket) {
 
       cdp.send('Network.getResponseBody', { requestId: message.params.requestId }, sessionId)
         .then((result) => {
-          bucket.push({
+          bucket.pushCapture({
             ...request,
             body: result.base64Encoded
               ? Buffer.from(result.body, 'base64').toString('utf8')
@@ -137,7 +185,7 @@ function installNetworkCapture(cdp, sessionId, bucket) {
           });
         })
         .catch((error) => {
-          bucket.push({
+          bucket.pushCapture({
             ...request,
             body: '',
             error: error.message,
@@ -156,11 +204,27 @@ async function createBrowserSession(config) {
     flatten: true,
   });
   const { sessionId } = attachedTarget;
-  const networkCaptures = [];
+  const networkCaptures = createCaptureBucket();
 
   await cdp.send('Page.enable', {}, sessionId);
   await cdp.send('Runtime.enable', {}, sessionId);
   await cdp.send('Network.enable', {}, sessionId);
+  await cdp.send('Network.setBlockedURLs', {
+    urls: [
+      '*.avif',
+      '*.gif',
+      '*.jpeg',
+      '*.jpg',
+      '*.mp4',
+      '*.otf',
+      '*.png',
+      '*.ttf',
+      '*.webm',
+      '*.webp',
+      '*.woff',
+      '*.woff2',
+    ],
+  }, sessionId).catch(() => {});
   installNetworkCapture(cdp, sessionId, networkCaptures);
 
   return {
@@ -443,24 +507,26 @@ async function clickMatchCard(cdp, sessionId, card) {
 }
 
 async function waitForLoungeCapture(bucket, minCapturedAtMs, timeoutMs = 15000) {
-  const startedAt = Date.now();
   const isFreshLounge = (capture) => (
     capture.url?.includes('/next-api/lounges') &&
     Date.parse(capture.capturedAt || '') >= minCapturedAtMs
   );
+  const isSuccessfulFreshLounge = (capture) => (
+    isFreshLounge(capture) &&
+    capture.status >= 200 &&
+    capture.status < 300
+  );
 
-  while (Date.now() - startedAt < timeoutMs) {
-    const capture = bucket.find((item) => isFreshLounge(item) && item.status >= 200 && item.status < 300)
-      || bucket.find(isFreshLounge);
+  const existingSuccess = bucket.find(isSuccessfulFreshLounge);
 
-    if (capture) {
-      return capture;
-    }
-
-    await sleep(500);
+  if (existingSuccess) {
+    return existingSuccess;
   }
 
-  return bucket.find((item) => isFreshLounge(item) && item.status >= 200 && item.status < 300)
+  const freshSuccess = await bucket.waitFor(isSuccessfulFreshLounge, timeoutMs);
+
+  return freshSuccess
+    || bucket.find(isSuccessfulFreshLounge)
     || bucket.find(isFreshLounge)
     || null;
 }
@@ -672,6 +738,50 @@ export async function runMatchJob(config, card, emit = () => {}) {
   }
 }
 
+function isRetryableMatchResult(result) {
+  if (result?.ok) {
+    return false;
+  }
+
+  return /Inspected target navigated or closed|timed out waiting for CDP response|lounge_response_not_captured|match_card_not_found|not of type 'Node'/i
+    .test(result?.error || '');
+}
+
+async function runMatchJobWithRetries(config, session, card, emit = () => {}) {
+  let result = null;
+
+  for (let attempt = 1; attempt <= config.matchJobAttempts; attempt += 1) {
+    if (attempt > 1) {
+      emit({
+        event: 'match_job_retry_started',
+        matchCode: card.matchCode,
+        attempt,
+        attempts: config.matchJobAttempts,
+        previousError: result?.error,
+      });
+    }
+
+    result = await runMatchJobInSession(config, session, card, emit);
+
+    if (!isRetryableMatchResult(result) || attempt >= config.matchJobAttempts) {
+      return {
+        ...result,
+        attempts: attempt,
+      };
+    }
+
+    emit({
+      event: 'match_job_retry_scheduled',
+      matchCode: card.matchCode,
+      attempt,
+      attempts: config.matchJobAttempts,
+      error: result.error,
+    });
+  }
+
+  return result;
+}
+
 export async function runMatchJobsInPool(config, cards, emit = () => {}) {
   if (cards.length === 0) {
     return [];
@@ -708,7 +818,7 @@ export async function runMatchJobsInPool(config, cards, emit = () => {}) {
         let result;
 
         try {
-          result = await runMatchJobInSession(config, session, card, emit);
+          result = await runMatchJobWithRetries(config, session, card, emit);
         } catch (error) {
           result = {
             checkedAt: new Date().toISOString(),
@@ -729,6 +839,7 @@ export async function runMatchJobsInPool(config, cards, emit = () => {}) {
           ok: result.ok,
           rows: result.availability?.rowCount ?? 0,
           availableRows: result.availability?.availableRows?.length ?? 0,
+          attempts: result.attempts ?? 1,
           error: result.error,
           workerIndex: workerIndex + 1,
         });

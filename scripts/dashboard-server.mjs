@@ -105,6 +105,7 @@ function configForRun(overrides = {}) {
     fastFetchConcurrency: overrides.fastFetchConcurrency,
     fastPollEnabled: overrides.fastPollEnabled,
     fullDiscoveryEvery: overrides.fullDiscoveryEvery,
+    matchJobAttempts: overrides.matchJobAttempts,
   });
 }
 
