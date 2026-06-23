@@ -40,10 +40,10 @@
                   :class="{ active: telegramGlobalAlertsEnabled }"
                   :aria-pressed="telegramGlobalAlertsEnabled"
                   :disabled="telegramSettingsSaving"
-                  :title="telegramGlobalAlertsEnabled ? 'Telegram manda alertas globales y alertas tuyas' : 'Telegram manda solo tus alertas personalizadas'"
+                  :title="telegramGlobalAlertsEnabled ? 'Telegram manda alertas generales de tarjetas' : 'Telegram no manda alertas generales de tarjetas; las personalizadas siguen activas'"
                   @click="toggleTelegramGlobalAlerts()">
             <span class="telegram-toggle-track"><span class="telegram-toggle-knob"></span></span>
-            <span x-text="telegramModeLabel">Solo tuyas</span>
+            <span x-text="telegramModeLabel">Alertas generales OFF</span>
           </button>
           <button x-show="showStartBtn" :disabled="cycleDisabled" class="btn-dark" @click="startTicker()">Iniciar</button>
           <button x-show="showStopBtn" class="btn-dark" @click="stopTicker()">Detener</button>

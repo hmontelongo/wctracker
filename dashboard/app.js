@@ -250,7 +250,7 @@ function describeEvent(event) {
     fast_targets_fetch_started: `Consultando ${event.targetCount || 0} endpoints`,
     fast_target_result: `Fast ${event.matchCode || ''}: ${event.rows || 0} filas, ${event.availableRows || 0} disponibles`,
     fast_cycle_failed_fallback: `Fast poll fallo, usando discovery: ${event.error || 'sin detalle'}`,
-    telegram_settings_updated: event.globalAlertsEnabled ? 'Telegram: alertas globales activas' : 'Telegram: solo alertas tuyas',
+    telegram_settings_updated: event.globalAlertsEnabled ? 'Telegram: alertas generales activas' : 'Telegram: alertas generales apagadas',
     telegram_settings_failed: `Telegram fallo: ${event.error || 'sin detalle'}`,
     match_worker_started: `Worker ${event.workerIndex || ''}/${event.totalWorkers || ''} listo`,
     match_worker_failed: `Worker ${event.workerIndex || ''} fallo: ${event.error || 'sin detalle'}`,
@@ -487,7 +487,7 @@ document.addEventListener('alpine:init', () => {
       return Boolean(this.notifications?.settings?.globalAlertsEnabled);
     },
     get telegramModeLabel() {
-      return this.telegramGlobalAlertsEnabled ? 'Globales on' : 'Solo tuyas';
+      return this.telegramGlobalAlertsEnabled ? 'Alertas generales ON' : 'Alertas generales OFF';
     },
 
     // --- Metrics ---
