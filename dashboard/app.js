@@ -1,4 +1,5 @@
 const DEFAULT_ALERT_RETENTION_MS = 10 * 60 * 1000;
+const COUNTRY_FILTER_COOKIE = 'jaime_country_filter';
 
 const ZONE_COLORS = {
   'Champions Club': '#b8902f',
@@ -54,8 +55,59 @@ function money(value) {
   return new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN', maximumFractionDigits: 0 }).format(value);
 }
 
+function readCookie(name) {
+  const prefix = `${name}=`;
+  const raw = document.cookie
+    .split(';')
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(prefix))
+    ?.slice(prefix.length) || '';
+  return raw ? decodeURIComponent(raw) : '';
+}
+
+function writeCookie(name, value) {
+  document.cookie = `${name}=${encodeURIComponent(value)}; max-age=31536000; path=/; SameSite=Lax`;
+}
+
+function rowShopCountry(row) {
+  return row?.shopCountry || row?.visitorCountry || row?.shop_country || '';
+}
+
+function uniqueValues(values) {
+  return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
+}
+
 function ticketKey(row) {
-  return [row.matchCode, row.performanceId, row.loungeId, row.seatingCode, row.priceMxn].join('|');
+  const shopCountry = rowShopCountry(row);
+  const parts = [row.matchCode, row.performanceId, row.loungeId, row.seatingCode, row.packageTitle, row.priceMxn].map((part) => part ?? '');
+  return shopCountry ? [shopCountry, ...parts].join('|') : parts.join('|');
+}
+
+function ticketKeyAliases(row) {
+  const shopCountry = rowShopCountry(row);
+  const withPackage = [row.matchCode, row.performanceId, row.loungeId, row.seatingCode, row.packageTitle, row.priceMxn].map((part) => part ?? '').join('|');
+  const legacy = [row.matchCode, row.performanceId, row.loungeId, row.seatingCode, row.priceMxn].map((part) => part ?? '').join('|');
+  const aliases = shopCountry
+    ? [[shopCountry, withPackage].join('|'), withPackage, [shopCountry, legacy].join('|'), legacy]
+    : [withPackage, legacy];
+
+  return [...new Set(aliases.filter(Boolean))];
+}
+
+function ruleMatchesRow(rule, row) {
+  return Boolean(rule?.rowKey && ticketKeyAliases(row).includes(rule.rowKey));
+}
+
+function deduplicateRows(rows) {
+  const map = new Map();
+  for (const row of rows) {
+    const key = ticketKey(row);
+    const existing = map.get(key);
+    if (!existing || Number(row.availableQuantity || 0) > Number(existing.availableQuantity || 0)) {
+      map.set(key, row);
+    }
+  }
+  return [...map.values()];
 }
 
 function timeAgo(timestamp, now) {
@@ -228,6 +280,9 @@ function describeEvent(event) {
     dashboard_cycle_completed: `Ciclo terminado: ${event.availableRowCount || 0} disponibles, ${event.failedMatchCount || 0} fallos`,
     dashboard_cycle_failed: `Fallo: ${event.error || 'sin detalle'}`,
     discovery_started: 'Discovery: buscando partidos comprables',
+    discovery_country_started: `Discovery: abriendo tienda ${event.country || ''}`,
+    discovery_country_completed: `Discovery ${event.country || ''}: ${event.cardsFound || 0} tarjetas, ${event.jobsInserted || 0} jobs nuevos`,
+    discovery_country_failed: `Discovery ${event.country || ''} fallo: ${event.error || 'sin detalle'}`,
     discovery_skipped_locked: 'Discovery: otro proceso tiene el lock',
     discovery_completed: `Discovery: ${event.cardsFound || 0} tarjetas, ${event.jobsInserted || 0} jobs nuevos`,
     discovery_failed: `Discovery fallo: ${event.error || 'sin detalle'}`,
@@ -380,7 +435,7 @@ document.addEventListener('alpine:init', () => {
     pulseMatches: {},
     collapsed: {},
     isAdmin: location.pathname.replace(/\/$/, '').endsWith('/admin') || new URLSearchParams(location.search).has('admin'),
-    visitorCountry: 'Mexico',
+    countryFilter: readCookie(COUNTRY_FILTER_COOKIE) || 'all',
     matchConcurrency: 6,
     intervalMs: 60000,
 
@@ -431,10 +486,14 @@ document.addEventListener('alpine:init', () => {
         const rulesPayload = await rulesResponse.json();
         this.alertRules = rulesPayload.rules || [];
       }
+
+      if (this.countryFilter !== 'all' && this.availableCountries.length > 0 && !this.availableCountries.includes(this.countryFilter)) {
+        this.setCountryFilter('all', false);
+      }
     },
 
     requestBody() {
-      return { visitorCountry: this.visitorCountry, matchConcurrency: Number(this.matchConcurrency || 1), intervalMs: Number(this.intervalMs || 60000) };
+      return { matchConcurrency: Number(this.matchConcurrency || 1), intervalMs: Number(this.intervalMs || 60000) };
     },
 
     async startTicker() {
@@ -477,7 +536,7 @@ document.addEventListener('alpine:init', () => {
     get statusLabel() {
       if (this.job?.lastError) return 'Error';
       if (this.job?.running) return describeEvent(this.job?.lastEvent) || 'Ejecutando';
-      if (this.job?.tickerRunning) return `En vivo · ${this.latestCycle?.visitorCountry || this.visitorCountry}`;
+      if (this.job?.tickerRunning) return `En vivo · ${this.shopLabel}`;
       return 'En espera';
     },
     get showStartBtn() { return this.isAdmin && !this.job?.tickerRunning; },
@@ -488,6 +547,30 @@ document.addEventListener('alpine:init', () => {
     },
     get telegramModeLabel() {
       return this.telegramGlobalAlertsEnabled ? 'Alertas generales ON' : 'Alertas generales OFF';
+    },
+
+    countryRows(rows) {
+      const input = rows || [];
+      if (this.countryFilter === 'all') return input;
+      return input.filter((row) => rowShopCountry(row) === this.countryFilter);
+    },
+    get availableCountries() {
+      return uniqueValues([
+        ...(this.latestCycle?.visitorCountries || []),
+        ...(this.latestCycle?.shopCountries || []),
+        ...(this.latestCycle?.rows || []).map((row) => rowShopCountry(row)),
+      ]);
+    },
+    get scannedCountriesLabel() {
+      return this.availableCountries.length ? this.availableCountries.join(', ') : 'Sin datos';
+    },
+    setCountryFilter(country, close = true) {
+      this.countryFilter = country || 'all';
+      writeCookie(COUNTRY_FILTER_COOKIE, this.countryFilter);
+      if (close) this.closeDetail();
+    },
+    get rowsInCountry() {
+      return this.countryRows(deduplicateRows(this.latestCycle?.rows || []));
     },
 
     // --- Metrics ---
@@ -503,18 +586,24 @@ document.addEventListener('alpine:init', () => {
     isScanning(matchCode) { return Boolean(this.pulseMatches[matchCode]); },
     matchHasAlerts(matchCode) { return this.alerts.some((r) => r.matchCode === matchCode); },
     isRowAlert(row) { return isActiveAlert(row, this.latestCycle, this.now); },
-    get matchesFound() { return this.latestCycle?.matchCardsFound ?? 0; },
-    get matchesScanned() { return this.latestCycle?.matchCardsScanned ?? 0; },
-    get rowCount() { return this.latestCycle?.rowCount ?? 0; },
-    get availableCount() { return this.latestCycle?.availableRowCount ?? 0; },
+    get matchesFound() {
+      if (this.countryFilter === 'all') return this.latestCycle?.matchCardsFound ?? 0;
+      return new Set(this.rowsInCountry.map((row) => row.matchCode || row.performanceId).filter(Boolean)).size;
+    },
+    get matchesScanned() {
+      if (this.countryFilter === 'all') return this.latestCycle?.matchCardsScanned ?? 0;
+      return new Set(this.rowsInCountry.map((row) => row.matchCode || row.performanceId).filter(Boolean)).size;
+    },
+    get rowCount() { return this.rowsInCountry.length; },
+    get availableCount() { return this.rowsInCountry.filter((row) => row.available).length; },
     get lastUpdated() {
       return this.latestCycle?.cycleCompletedAt ? new Date(this.latestCycle.cycleCompletedAt).toLocaleString() : 'Sin ciclos aún';
     },
-    get shopLabel() { return this.latestCycle?.visitorCountry || this.visitorCountry; },
+    get shopLabel() { return this.countryFilter === 'all' ? 'Todas las tiendas' : this.countryFilter; },
 
     // --- Alerts ---
-    get alerts() { return activeAlerts(this.latestCycle, this.now).slice(0, 8); },
-    get alertCount() { return activeAlerts(this.latestCycle, this.now).length; },
+    get alerts() { return this.countryRows(activeAlerts(this.latestCycle, this.now)).slice(0, 8); },
+    get alertCount() { return this.countryRows(activeAlerts(this.latestCycle, this.now)).length; },
     get retentionMin() { return Math.round(alertRetentionMs(this.latestCycle) / 60000); },
     alertZoneColor(row) { return zoneColor(row); },
     alertTeams(row) { return matchInfo(row, this.latestCycle).teams; },
@@ -539,7 +628,7 @@ document.addEventListener('alpine:init', () => {
     setFilter(f) { this.filter = f; this.closeDetail(); },
 
     get filteredRows() {
-      const rows = this.latestCycle?.rows || [];
+      const rows = this.rowsInCountry;
       if (this.filter === 'available') return rows.filter((r) => r.available);
       if (this.filter === 'unavailable') return rows.filter((r) => !r.available);
       return rows;
@@ -556,13 +645,13 @@ document.addEventListener('alpine:init', () => {
     },
 
     matchAvailLabel(m) {
-      const all = (this.latestCycle?.rows || []).filter((r) => r.matchCode === m.matchCode);
+      const all = this.countryRows(deduplicateRows((this.latestCycle?.rows || []).filter((r) => r.matchCode === m.matchCode)));
       const avail = all.filter((r) => r.available).length;
       return `${avail}/${all.length} configs`;
     },
 
     matchAvailQty(m) {
-      const all = (this.latestCycle?.rows || []).filter((r) => r.matchCode === m.matchCode);
+      const all = this.countryRows(deduplicateRows((this.latestCycle?.rows || []).filter((r) => r.matchCode === m.matchCode)));
       return all.reduce((s, r) => s + Number(r.availableQuantity || 0), 0);
     },
 
@@ -601,8 +690,7 @@ document.addEventListener('alpine:init', () => {
     tKey(row) { return ticketKey(row); },
     tSelected(row) { return this.selectedKey === ticketKey(row); },
     tHasAlertRule(row) {
-      const key = ticketKey(row);
-      return this.alertRules.some((rule) => rule.rowKey === key);
+      return this.alertRules.some((rule) => ruleMatchesRow(rule, row));
     },
 
     // --- Detail Drawer ---
@@ -679,8 +767,7 @@ document.addEventListener('alpine:init', () => {
     get dDetails() { return Array.isArray(this.dRow?.rawTicketType?.details) ? this.dRow.rawTicketType.details : []; },
     get dAlertRules() {
       if (!this.dRow) return [];
-      const key = ticketKey(this.dRow);
-      return this.alertRules.filter((rule) => rule.rowKey === key);
+      return this.alertRules.filter((rule) => ruleMatchesRow(rule, this.dRow));
     },
     get dHasAlertRule() { return this.dAlertRules.length > 0; },
     get dPrimaryAlertRule() { return this.dAlertRules[0] || null; },
@@ -743,7 +830,7 @@ document.addEventListener('alpine:init', () => {
     // Match detail computed
     get dmRows() {
       if (!this.drawerMatchCode) return [];
-      return (this.latestCycle?.rows || []).filter((r) => r.matchCode === this.drawerMatchCode);
+      return this.countryRows(deduplicateRows((this.latestCycle?.rows || []).filter((r) => r.matchCode === this.drawerMatchCode)));
     },
     get dmInfo() { return this.dmRows.length ? matchInfo(this.dmRows[0], this.latestCycle) : {}; },
     get dmMeta() { return this.dmRows.length ? matchLocation(this.dmRows[0], this.latestCycle) : ''; },
@@ -772,7 +859,8 @@ document.addEventListener('alpine:init', () => {
       if (!c) return '{}';
       return JSON.stringify({
         cicloInicio: c.cycleStartedAt, cicloFin: c.cycleCompletedAt,
-        modo: c.mode || 'browser-discovery', tienda: c.visitorCountry,
+        modo: c.mode || 'browser-discovery', tiendas: c.visitorCountries || c.shopCountries || [c.visitorCountry],
+        filtroTienda: this.shopLabel,
         partidosDetectados: c.matchCardsFound, partidosRevisados: c.matchCardsScanned,
         partidosFallidos: c.failedMatchCount || 0, parcial: Boolean(c.partial),
         trabajosParalelos: c.matchConcurrency, tiposDeBoleto: c.rowCount,

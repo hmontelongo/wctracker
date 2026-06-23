@@ -133,10 +133,18 @@
           </div>
           <button class="btn-outline" @click="toggleAll()" x-text="toggleAllLabel">Colapsar todo</button>
         </div>
-        <div class="seg-control" role="group" aria-label="Filtro de disponibilidad">
-          <button type="button" :class="{ active: filter === 'available' }" @click="setFilter('available')">Disponibles</button>
-          <button type="button" :class="{ active: filter === 'all' }" @click="setFilter('all')">Todos</button>
-          <button type="button" :class="{ active: filter === 'unavailable' }" @click="setFilter('unavailable')">No disponibles</button>
+        <div class="board-filters">
+          <select class="country-filter" :value="countryFilter" @change="setCountryFilter($event.target.value)" aria-label="Filtro de tienda">
+            <option value="all">Todas las tiendas</option>
+            <template x-for="country in availableCountries" :key="country">
+              <option :value="country" x-text="country"></option>
+            </template>
+          </select>
+          <div class="seg-control" role="group" aria-label="Filtro de disponibilidad">
+            <button type="button" :class="{ active: filter === 'available' }" @click="setFilter('available')">Disponibles</button>
+            <button type="button" :class="{ active: filter === 'all' }" @click="setFilter('all')">Todos</button>
+            <button type="button" :class="{ active: filter === 'unavailable' }" @click="setFilter('unavailable')">No disponibles</button>
+          </div>
         </div>
       </div>
 
@@ -172,7 +180,7 @@
               <template x-if="m.rows.length === 0">
                 <div class="match-empty">Sin boletos en este filtro.</div>
               </template>
-              <template x-for="(row, idx) in sortedTickets(m)" :key="tKey(row)">
+              <template x-for="row in sortedTickets(m)" :key="tKey(row)">
                 <div role="button" tabindex="0"
                      class="ticket-row"
                      :class="{ unavailable: !row.available, selected: tSelected(row), 'is-alert': isRowAlert(row) }"
@@ -218,7 +226,7 @@
       <!-- ===== FOOTER ===== -->
       <footer class="app-footer">
         <span x-text="lastUpdated">Sin ciclos aún</span>
-        <span> · Tienda activa: <b x-text="shopLabel">Mexico</b></span>
+        <span> · Vista: <b x-text="shopLabel">Todas las tiendas</b></span>
       </footer>
 
       <!-- ===== TICKET/MATCH DETAIL DRAWER ===== -->
@@ -354,7 +362,7 @@
         <section class="system-section">
           <h3>Configuración de depuración</h3>
           <div class="controls">
-            <label>Tienda / comprador <input x-model="visitorCountry" autocomplete="off"></label>
+            <label>Tiendas escaneadas <input :value="scannedCountriesLabel" disabled></label>
             <label>Trabajos paralelos <input type="number" min="1" max="10" x-model.number="matchConcurrency"></label>
             <label>Intervalo ms <input type="number" min="30000" step="1000" x-model.number="intervalMs"></label>
             <button class="btn-outline" :disabled="cycleDisabled" @click="runCycle()">Ejecutar un ciclo manual</button>
