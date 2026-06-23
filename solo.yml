@@ -1,0 +1,12 @@
+name: World Cup Tracker
+icon_initials: WC
+processes:
+  Dashboard local:
+    command: npm run dashboard
+    working_dir: .
+    auto_start: false
+    auto_restart: false
+    env:
+      DASHBOARD_PORT: "5178"
+      DASHBOARD_AUTOSTART_TICKER: "0"
+      TELEGRAM_NOTIFICATIONS_ENABLED: "0"

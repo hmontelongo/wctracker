@@ -181,6 +181,52 @@ export function initSqlite(path) {
 
       CREATE UNIQUE INDEX IF NOT EXISTS alert_events_unique
         ON alert_events (row_key, event_type, event_at);
+
+      CREATE TABLE IF NOT EXISTS alert_rules (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        row_key TEXT NOT NULL,
+        match_code TEXT,
+        performance_id TEXT,
+        lounge_id TEXT,
+        seating_code TEXT,
+        package_title TEXT,
+        seating_name TEXT,
+        condition TEXT NOT NULL DEFAULT 'becomes_available',
+        label TEXT,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS alert_rules_active_unique
+        ON alert_rules (row_key, condition)
+        WHERE active = 1;
+
+      CREATE TABLE IF NOT EXISTS notification_outbox (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel TEXT NOT NULL DEFAULT 'telegram',
+        source_type TEXT NOT NULL,
+        source_id TEXT,
+        priority TEXT NOT NULL DEFAULT 'normal',
+        event_type TEXT,
+        dedupe_key TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at TEXT NOT NULL,
+        lease_owner TEXT,
+        lease_expires_at TEXT,
+        sent_at TEXT,
+        last_error TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS notification_outbox_dedupe_unique
+        ON notification_outbox (dedupe_key);
+
+      CREATE INDEX IF NOT EXISTS notification_outbox_pending_idx
+        ON notification_outbox (channel, status, next_attempt_at, priority);
     `);
     ensureColumn(db, 'ticket_rows', 'country', 'TEXT');
     ensureColumn(db, 'ticket_rows', 'last_alert_at', 'TEXT');
@@ -198,7 +244,7 @@ function readJson(path, fallback = null) {
   return JSON.parse(readFileSync(path, 'utf8'));
 }
 
-function rowKey(row) {
+export function rowKey(row) {
   return [
     row.matchCode,
     row.performanceId,
@@ -206,6 +252,206 @@ function rowKey(row) {
     row.seatingCode,
     row.priceMxn,
   ].join('|');
+}
+
+function safeParseJson(value, fallback = null) {
+  if (!value) {
+    return fallback;
+  }
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function normalizeRuleCondition(condition) {
+  const value = String(condition || 'becomes_available').trim();
+  const allowed = new Set([
+    'becomes_available',
+    'stock_increase',
+    'stock_change',
+    'price_change',
+    'any_change',
+  ]);
+
+  return allowed.has(value) ? value : 'becomes_available';
+}
+
+function normalizeRuleInput(input = {}) {
+  const row = input.row || input.ticket || input;
+  const key = input.rowKey || input.row_key || row.rowKey || row.row_key || rowKey(row);
+
+  const keyParts = String(key || '').split('|').map((part) => part.trim()).filter(Boolean);
+
+  if (!key || key.includes('undefined') || key.includes('null') || keyParts.length < 3) {
+    throw new Error('Alert rule requires a stable row key or ticket row payload.');
+  }
+
+  const rule = {
+    rowKey: key,
+    matchCode: input.matchCode ?? row.matchCode ?? null,
+    performanceId: input.performanceId ?? row.performanceId ?? null,
+    loungeId: input.loungeId ?? row.loungeId ?? null,
+    seatingCode: input.seatingCode ?? row.seatingCode ?? null,
+    packageTitle: input.packageTitle ?? row.packageTitle ?? null,
+    seatingName: input.seatingName ?? row.seatingName ?? null,
+    condition: normalizeRuleCondition(input.condition),
+    label: input.label ?? null,
+  };
+
+  const hasMatchIdentity = Boolean(rule.matchCode || rule.performanceId);
+  const hasTicketIdentity = Boolean(rule.loungeId || rule.seatingCode || rule.packageTitle || rule.seatingName);
+
+  if (!hasMatchIdentity || !hasTicketIdentity) {
+    throw new Error('Alert rule requires match and ticket identifiers.');
+  }
+
+  return rule;
+}
+
+function serializeAlertRule(rule) {
+  if (!rule) {
+    return null;
+  }
+
+  return {
+    id: Number(rule.id),
+    rowKey: rule.row_key,
+    matchCode: rule.match_code,
+    performanceId: rule.performance_id,
+    loungeId: rule.lounge_id,
+    seatingCode: rule.seating_code,
+    packageTitle: rule.package_title,
+    seatingName: rule.seating_name,
+    condition: rule.condition,
+    label: rule.label,
+    active: Boolean(rule.active),
+    createdAt: rule.created_at,
+    updatedAt: rule.updated_at,
+  };
+}
+
+function activeRules(db) {
+  return db.prepare(`
+    SELECT *
+    FROM alert_rules
+    WHERE active = 1
+    ORDER BY created_at ASC, id ASC
+  `).all();
+}
+
+function previousRowsFromLatestState(db) {
+  const row = db.prepare('SELECT state_json FROM latest_state WHERE id = 1').get();
+  const state = safeParseJson(row?.state_json, {});
+  const rows = Array.isArray(state?.latestRows) ? state.latestRows : [];
+  return new Map(rows.map((item) => [rowKey(item), item]));
+}
+
+function rowsByKey(rows = []) {
+  return new Map(rows.map((row) => [rowKey(row), row]));
+}
+
+function rowMatchesRule(row, rule) {
+  if (!row) {
+    return false;
+  }
+
+  if (rule.row_key) {
+    return rowKey(row) === rule.row_key;
+  }
+
+  return (!rule.match_code || row.matchCode === rule.match_code)
+    && (!rule.performance_id || row.performanceId === rule.performance_id)
+    && (!rule.lounge_id || row.loungeId === rule.lounge_id)
+    && (!rule.seating_code || row.seatingCode === rule.seating_code);
+}
+
+function ruleTrigger(rule, row, previousRow, cycle) {
+  if (!row || row.stale) {
+    return null;
+  }
+
+  const previousAvailable = Boolean(previousRow?.available);
+  const currentAvailable = Boolean(row.available);
+  const hasPrevious = Boolean(previousRow);
+  const previousQuantity = Number(previousRow?.availableQuantity ?? 0);
+  const currentQuantity = Number(row.availableQuantity ?? 0);
+  const previousPrice = Number(previousRow?.priceMxn ?? 0);
+  const currentPrice = Number(row.priceMxn ?? 0);
+  const availabilityChanged = previousAvailable !== currentAvailable;
+  const stockChanged = previousQuantity !== currentQuantity;
+  const priceChanged = previousPrice !== currentPrice;
+  const changed = availabilityChanged || stockChanged || priceChanged;
+  const changedAt = row.lastChangedAt || row.checkedAt || cycle.cycleCompletedAt;
+
+  if (!changed || toMs(changedAt) < toMs(cycle.cycleStartedAt)) {
+    return null;
+  }
+
+  const condition = normalizeRuleCondition(rule.condition);
+
+  if (condition === 'becomes_available' && !(currentAvailable && !previousAvailable)) {
+    return null;
+  }
+
+  if (condition !== 'becomes_available' && !hasPrevious) {
+    return null;
+  }
+
+  if (condition === 'stock_increase' && !(currentAvailable && currentQuantity > previousQuantity)) {
+    return null;
+  }
+
+  if (condition === 'stock_change' && !stockChanged) {
+    return null;
+  }
+
+  if (condition === 'price_change' && !priceChanged) {
+    return null;
+  }
+
+  return {
+    eventType: condition,
+    eventAt: changedAt,
+    previousAvailable,
+    currentAvailable,
+    previousQuantity,
+    currentQuantity,
+    previousPrice,
+    currentPrice,
+  };
+}
+
+function enqueueNotification(db, notification) {
+  const now = isoNow();
+
+  db.prepare(`
+    INSERT INTO notification_outbox (
+      channel,
+      source_type,
+      source_id,
+      priority,
+      event_type,
+      dedupe_key,
+      payload_json,
+      status,
+      next_attempt_at,
+      updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+    ON CONFLICT(dedupe_key) DO NOTHING
+  `).run(
+    notification.channel || 'telegram',
+    notification.sourceType,
+    notification.sourceId == null ? null : String(notification.sourceId),
+    notification.priority || 'normal',
+    notification.eventType || null,
+    notification.dedupeKey,
+    JSON.stringify(notification.payload),
+    now,
+    now,
+  );
 }
 
 export function stateFromCycle(cycle, latestCyclePath = 'artifacts/fifa-cycle-latest.json') {
@@ -245,6 +491,10 @@ export function persistCycleToSqlite(cycle, options = {}) {
 
   try {
     db.exec('BEGIN IMMEDIATE');
+    const previousRows = previousRowsFromLatestState(db);
+    const currentRows = rowsByKey(cycle.rows || []);
+    const triggeredAlertKeys = new Set();
+
     db.prepare(`
       INSERT INTO cycles (
         tick,
@@ -363,13 +613,15 @@ export function persistCycleToSqlite(cycle, options = {}) {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(row_key, event_type, event_at) DO NOTHING
     `);
+    const alertEvents = [];
 
     for (const row of cycle.alerts || []) {
       const eventAt = row.lastAlertAt || row.lastChangedAt || row.checkedAt || cycle.cycleCompletedAt;
       const eventType = row.alertReason || row.availabilityFreshness || 'availability';
+      const key = rowKey(row);
 
       insertAlert.run(
-        rowKey(row),
+        key,
         eventType,
         eventAt,
         row.matchCode ?? null,
@@ -379,6 +631,71 @@ export function persistCycleToSqlite(cycle, options = {}) {
         row.priceMxn ?? null,
         JSON.stringify(row),
       );
+      const alertEvent = db.prepare(`
+        SELECT id, row_key, event_type, event_at
+        FROM alert_events
+        WHERE row_key = ? AND event_type = ? AND event_at = ?
+      `).get(key, eventType, eventAt);
+
+      if (alertEvent) {
+        alertEvents.push({ ...alertEvent, row });
+      }
+    }
+
+    for (const rule of activeRules(db)) {
+      const currentRow = currentRows.get(rule.row_key)
+        || [...currentRows.values()].find((row) => rowMatchesRule(row, rule));
+      const previousRow = previousRows.get(rule.row_key) || previousRows.get(currentRow ? rowKey(currentRow) : '');
+      const trigger = ruleTrigger(rule, currentRow, previousRow, cycle);
+
+      if (!trigger) {
+        continue;
+      }
+
+      const key = rowKey(currentRow);
+      triggeredAlertKeys.add(`${key}|${trigger.eventAt}`);
+      enqueueNotification(db, {
+        sourceType: 'alert_rule',
+        sourceId: rule.id,
+        priority: 'high',
+        eventType: trigger.eventType,
+        dedupeKey: `alert_rule:${rule.id}:${trigger.eventType}:${key}:${trigger.eventAt}`,
+        payload: {
+          sourceType: 'alert_rule',
+          priority: 'high',
+          rule: serializeAlertRule(rule),
+          event: trigger,
+          row: currentRow,
+          previousRow,
+          cycleCompletedAt: cycle.cycleCompletedAt,
+          shopUrl: cycle.shopUrl,
+        },
+      });
+    }
+
+    for (const event of alertEvents) {
+      if (triggeredAlertKeys.has(`${event.row_key}|${event.event_at}`)) {
+        continue;
+      }
+
+      enqueueNotification(db, {
+        sourceType: 'global_alert',
+        sourceId: event.id,
+        priority: 'normal',
+        eventType: event.event_type,
+        dedupeKey: `global_alert:${event.id}`,
+        payload: {
+          sourceType: 'global_alert',
+          priority: 'normal',
+          event: {
+            eventType: event.event_type,
+            eventAt: event.event_at,
+          },
+          row: event.row,
+          cycleCompletedAt: cycle.cycleCompletedAt,
+          shopUrl: cycle.shopUrl,
+        },
+      });
     }
 
     db.prepare(`
@@ -427,6 +744,267 @@ export function readLatestFromSqlite(options = {}) {
 
 export function readPreviousStateFromSqlite(options = {}) {
   return readLatestFromSqlite(options).state;
+}
+
+export function createAlertRule(input, options = {}) {
+  initSqlite(options.sqlitePath);
+  const db = openDatabase(options.sqlitePath);
+  const rule = normalizeRuleInput(input);
+  const now = isoNow();
+
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    db.prepare(`
+      INSERT INTO alert_rules (
+        row_key,
+        match_code,
+        performance_id,
+        lounge_id,
+        seating_code,
+        package_title,
+        seating_name,
+        condition,
+        label,
+        active,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+      ON CONFLICT(row_key, condition) WHERE active = 1 DO UPDATE SET
+        match_code = excluded.match_code,
+        performance_id = excluded.performance_id,
+        lounge_id = excluded.lounge_id,
+        seating_code = excluded.seating_code,
+        package_title = excluded.package_title,
+        seating_name = excluded.seating_name,
+        label = COALESCE(excluded.label, alert_rules.label),
+        updated_at = excluded.updated_at
+    `).run(
+      rule.rowKey,
+      rule.matchCode,
+      rule.performanceId,
+      rule.loungeId,
+      rule.seatingCode,
+      rule.packageTitle,
+      rule.seatingName,
+      rule.condition,
+      rule.label,
+      now,
+    );
+
+    const stored = db.prepare(`
+      SELECT *
+      FROM alert_rules
+      WHERE row_key = ? AND condition = ? AND active = 1
+      ORDER BY id DESC
+      LIMIT 1
+    `).get(rule.rowKey, rule.condition);
+    db.exec('COMMIT');
+    return serializeAlertRule(stored);
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  } finally {
+    db.close();
+  }
+}
+
+export function listAlertRules(options = {}) {
+  initSqlite(options.sqlitePath);
+  const db = openDatabase(options.sqlitePath);
+
+  try {
+    return db.prepare(`
+      SELECT *
+      FROM alert_rules
+      WHERE active = 1
+      ORDER BY created_at DESC, id DESC
+    `).all().map(serializeAlertRule);
+  } finally {
+    db.close();
+  }
+}
+
+export function deleteAlertRule(id, options = {}) {
+  initSqlite(options.sqlitePath);
+  const db = openDatabase(options.sqlitePath);
+  const now = isoNow();
+
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    const row = db.prepare(`
+      SELECT *
+      FROM alert_rules
+      WHERE id = ? AND active = 1
+    `).get(Number(id));
+
+    if (!row) {
+      db.exec('COMMIT');
+      return null;
+    }
+
+    const result = db.prepare(`
+      UPDATE alert_rules
+      SET active = 0, updated_at = ?
+      WHERE id = ? AND active = 1
+    `).run(now, Number(id));
+
+    db.exec('COMMIT');
+    return Number(result.changes || 0) > 0
+      ? serializeAlertRule({ ...row, active: 0, updated_at: now })
+      : null;
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  } finally {
+    db.close();
+  }
+}
+
+export function readNotificationStats(options = {}) {
+  initSqlite(options.sqlitePath);
+  const db = openDatabase(options.sqlitePath);
+
+  try {
+    const rows = db.prepare(`
+      SELECT status, COUNT(*) AS count
+      FROM notification_outbox
+      WHERE channel = 'telegram'
+      GROUP BY status
+    `).all();
+
+    return Object.fromEntries(rows.map((row) => [row.status, Number(row.count)]));
+  } finally {
+    db.close();
+  }
+}
+
+export function claimPendingNotifications(owner, options = {}) {
+  initSqlite(options.sqlitePath);
+  const db = openDatabase(options.sqlitePath);
+  const now = isoNow();
+  const limit = Math.max(1, Number(options.limit || 5));
+  const maxAttempts = Math.max(1, Number(options.maxAttempts || 5));
+  const leaseMs = Math.max(5000, Number(options.leaseMs || 30000));
+  const leaseExpiresAt = new Date(Date.now() + leaseMs).toISOString();
+
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    const rows = db.prepare(`
+      SELECT *
+      FROM notification_outbox
+      WHERE channel = 'telegram'
+      AND next_attempt_at <= ?
+      AND attempts < ?
+      AND (
+        status IN ('pending', 'failed')
+        OR (status = 'sending' AND lease_expires_at <= ?)
+      )
+      ORDER BY
+        CASE priority WHEN 'high' THEN 0 ELSE 1 END,
+        created_at ASC,
+        id ASC
+      LIMIT ?
+    `).all(now, maxAttempts, now, limit);
+
+    const claim = db.prepare(`
+      UPDATE notification_outbox
+      SET status = 'sending',
+        attempts = attempts + 1,
+        lease_owner = ?,
+        lease_expires_at = ?,
+        updated_at = ?
+      WHERE id = ?
+    `);
+
+    for (const row of rows) {
+      claim.run(owner, leaseExpiresAt, now, row.id);
+    }
+
+    db.exec('COMMIT');
+    return rows.map((row) => ({
+      id: Number(row.id),
+      channel: row.channel,
+      sourceType: row.source_type,
+      sourceId: row.source_id,
+      priority: row.priority,
+      eventType: row.event_type,
+      dedupeKey: row.dedupe_key,
+      payload: safeParseJson(row.payload_json, {}),
+      attempts: Number(row.attempts) + 1,
+    }));
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  } finally {
+    db.close();
+  }
+}
+
+export function markNotificationSent(id, owner, options = {}) {
+  initSqlite(options.sqlitePath);
+  const db = openDatabase(options.sqlitePath);
+  const now = isoNow();
+
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    const row = db.prepare(`
+      SELECT source_type, source_id
+      FROM notification_outbox
+      WHERE id = ? AND lease_owner = ?
+    `).get(Number(id), owner);
+
+    if (!row) {
+      db.exec('COMMIT');
+      return false;
+    }
+
+    db.prepare(`
+      UPDATE notification_outbox
+      SET status = 'sent',
+        sent_at = ?,
+        lease_owner = NULL,
+        lease_expires_at = NULL,
+        last_error = NULL,
+        updated_at = ?
+      WHERE id = ?
+    `).run(now, now, Number(id));
+
+    if (row.source_type === 'global_alert' && row.source_id) {
+      db.prepare('UPDATE alert_events SET notified_at = ? WHERE id = ?').run(now, Number(row.source_id));
+    }
+
+    db.exec('COMMIT');
+    return true;
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  } finally {
+    db.close();
+  }
+}
+
+export function markNotificationFailed(id, owner, error, options = {}) {
+  initSqlite(options.sqlitePath);
+  const db = openDatabase(options.sqlitePath);
+  const now = isoNow();
+  const retryDelayMs = Math.max(1000, Number(options.retryDelayMs || 30000));
+  const nextAttemptAt = new Date(Date.now() + retryDelayMs).toISOString();
+
+  try {
+    const result = db.prepare(`
+      UPDATE notification_outbox
+      SET status = 'failed',
+        next_attempt_at = ?,
+        lease_owner = NULL,
+        lease_expires_at = NULL,
+        last_error = ?,
+        updated_at = ?
+      WHERE id = ? AND lease_owner = ?
+    `).run(nextAttemptAt, String(error || '').slice(0, 1000), now, Number(id), owner);
+
+    return Number(result.changes || 0) > 0;
+  } finally {
+    db.close();
+  }
 }
 
 export function backfillSqliteFromJson(options = {}) {

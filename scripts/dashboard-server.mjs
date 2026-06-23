@@ -14,7 +14,21 @@ import {
   runDiscoveryOnce,
   runWorkerPoolOnce,
 } from './lib/fifa-orchestrator.mjs';
-import { backfillSqliteFromJson, readLatestFromSqlite, readQueueStats } from './lib/sqlite-store.mjs';
+import {
+  backfillSqliteFromJson,
+  createAlertRule,
+  deleteAlertRule,
+  listAlertRules,
+  readLatestFromSqlite,
+  readNotificationStats,
+  readQueueStats,
+} from './lib/sqlite-store.mjs';
+import {
+  runTelegramNotifyOnce,
+  sendTelegramRuleEvent,
+  telegramConfigFromEnv,
+  telegramReady,
+} from './lib/telegram-notifier.mjs';
 
 loadDotEnv();
 
@@ -35,6 +49,7 @@ const jobState = {
   completedAt: null,
   discoveryLoopRunning: false,
   workerLoopRunning: false,
+  telegramLoopRunning: false,
   events: [],
 };
 
@@ -59,6 +74,10 @@ function latestState() {
     latestCycle: sqlite.latestCycle || readJson(DEFAULT_LATEST_CYCLE_PATH, null),
     state: sqlite.state || readJson(DEFAULT_STATE_PATH, null),
     queue: readQueueStats(),
+    notifications: {
+      telegramReady: telegramReady(telegramConfigFromEnv()),
+      telegram: readNotificationStats(),
+    },
   };
 }
 
@@ -117,6 +136,14 @@ function configForRun(overrides = {}) {
     queueJobAttempts: overrides.queueJobAttempts,
     workerIdleMs: overrides.workerIdleMs,
   });
+}
+
+async function sendRuleConfirmation(type, rule, row = null) {
+  try {
+    return await sendTelegramRuleEvent(telegramConfigFromEnv(), { type, rule, row });
+  } catch (error) {
+    return { sent: false, skipped: false, error: error.message };
+  }
 }
 
 async function runOneSweep(overrides = {}) {
@@ -213,6 +240,38 @@ async function workerLoop(overrides = {}) {
   }
 }
 
+async function telegramLoop() {
+  const owner = `telegram-dashboard-${process.pid}`;
+  jobState.telegramLoopRunning = true;
+
+  try {
+    while (true) {
+      const config = telegramConfigFromEnv();
+
+      try {
+        const result = await runTelegramNotifyOnce({ config, owner });
+
+        if (result.claimed || result.sent || result.failed) {
+          broadcast({
+            event: 'telegram_notify_tick',
+            claimed: result.claimed,
+            sent: result.sent,
+            failed: result.failed,
+            ready: result.ready,
+          });
+        }
+      } catch (error) {
+        jobState.lastError = error.message;
+        broadcast({ event: 'telegram_notify_error', error: error.message });
+      }
+
+      await sleep(config.intervalMs);
+    }
+  } finally {
+    jobState.telegramLoopRunning = false;
+  }
+}
+
 function startTicker(overrides = {}) {
   if (jobState.tickerRunning) {
     return false;
@@ -295,6 +354,33 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (url.pathname === '/api/alert-rules' && request.method === 'GET') {
+    sendJson(response, 200, { rules: listAlertRules() });
+    return;
+  }
+
+  if (url.pathname === '/api/alert-rules' && request.method === 'POST') {
+    try {
+      const body = await readBody(request);
+      const rule = createAlertRule(body);
+      const telegramConfirmation = await sendRuleConfirmation('created', rule, body.row || body.ticket || null);
+      sendJson(response, 201, { rule, telegramConfirmation });
+    } catch (error) {
+      sendJson(response, 422, { error: error.message });
+    }
+    return;
+  }
+
+  const alertRuleDelete = url.pathname.match(/^\/api\/alert-rules\/(\d+)$/);
+  if (alertRuleDelete && request.method === 'DELETE') {
+    const rule = deleteAlertRule(alertRuleDelete[1]);
+    const telegramConfirmation = rule
+      ? await sendRuleConfirmation('deleted', rule)
+      : null;
+    sendJson(response, rule ? 200 : 404, { deleted: Boolean(rule), rule, telegramConfirmation });
+    return;
+  }
+
   if (url.pathname === '/api/run-cycle' && request.method === 'POST') {
     if (jobState.tickerRunning) {
       sendJson(response, 409, { accepted: false, error: 'The scheduler is already running.', job: jobState });
@@ -329,6 +415,10 @@ const server = createServer(async (request, response) => {
 
 server.listen(port, host, () => {
   console.log(`Dashboard listening on http://${host}:${port}`);
+
+  if (telegramConfigFromEnv().enabled) {
+    telegramLoop().catch(() => {});
+  }
 
   if (autostartTicker && !jobState.tickerRunning) {
     startTicker({ autostart: true });
