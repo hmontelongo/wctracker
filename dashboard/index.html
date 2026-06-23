@@ -191,6 +191,7 @@
                   </div>
                   <div class="ticket-row-end">
                     <div class="ticket-freshness">
+                      <span class="ticket-notification-chip" x-show="tHasAlertRule(row)" title="Notificación definida">Aviso</span>
                       <template x-if="tFreshness(row).type === 'new'">
                         <span class="fresh-tag-new">
                           <span style="width:6px;height:6px;border-radius:50%;background:#c8820a;flex:none"></span>

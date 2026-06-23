@@ -681,7 +681,35 @@ button:disabled { cursor: wait; opacity: .5; }
   justify-content: flex-end;
   gap: 14px;
 }
-.ticket-freshness { white-space: nowrap; text-align: right; }
+.ticket-freshness {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  white-space: nowrap;
+  text-align: right;
+}
+.ticket-notification-chip {
+  height: 17px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  border: 1px solid #e0d59f;
+  border-radius: 999px;
+  background: #f4efd8;
+  color: #7c5b00;
+  font: 700 8.5px/1 var(--font-mono);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.ticket-notification-chip::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #c8820a;
+}
 .ticket-price {
   font: 600 17px/1 var(--font-mono);
   letter-spacing: -.02em;

@@ -600,6 +600,10 @@ document.addEventListener('alpine:init', () => {
     tFreshness(row) { return freshnessInfo(row, this.latestCycle, this.now); },
     tKey(row) { return ticketKey(row); },
     tSelected(row) { return this.selectedKey === ticketKey(row); },
+    tHasAlertRule(row) {
+      const key = ticketKey(row);
+      return this.alertRules.some((rule) => rule.rowKey === key);
+    },
 
     // --- Detail Drawer ---
     selectTicket(row) {
