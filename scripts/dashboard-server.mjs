@@ -146,6 +146,32 @@ async function sendRuleConfirmation(type, rule, row = null) {
   }
 }
 
+async function notifyTelegramOnce(reason) {
+  const config = telegramConfigFromEnv();
+  const owner = `telegram-dashboard-${process.pid}-immediate`;
+
+  try {
+    const result = await runTelegramNotifyOnce({ config, owner });
+
+    if (result.claimed || result.sent || result.failed) {
+      broadcast({
+        event: 'telegram_notify_immediate',
+        reason,
+        claimed: result.claimed,
+        sent: result.sent,
+        failed: result.failed,
+        ready: result.ready,
+      });
+    }
+
+    return result;
+  } catch (error) {
+    jobState.lastError = error.message;
+    broadcast({ event: 'telegram_notify_error', reason, error: error.message });
+    return { sent: 0, failed: 0, claimed: 0, error: error.message };
+  }
+}
+
 async function runOneSweep(overrides = {}) {
   const config = configForRun(overrides);
   jobState.running = true;
@@ -163,6 +189,7 @@ async function runOneSweep(overrides = {}) {
     await runDiscoveryOnce(config, broadcast);
     const sweep = await runWorkerPoolOnce(config, broadcast);
     const published = publishLatestCycleFromQueue(config, broadcast);
+    await notifyTelegramOnce('dashboard_sweep_published');
     jobState.completedAt = published?.cycle?.cycleCompletedAt || new Date().toISOString();
     return { sweep, published };
   } catch (error) {
@@ -209,6 +236,7 @@ async function singleWorkerLoop(workerIndex, overrides = {}) {
 
       if (result.processed) {
         const published = publishLatestCycleFromQueue(config, broadcast);
+        await notifyTelegramOnce('worker_cycle_published');
         jobState.completedAt = published?.cycle?.cycleCompletedAt || jobState.completedAt;
       }
 

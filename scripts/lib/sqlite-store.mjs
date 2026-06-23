@@ -207,6 +207,7 @@ export function initSqlite(path) {
         channel TEXT NOT NULL DEFAULT 'telegram',
         source_type TEXT NOT NULL,
         source_id TEXT,
+        row_key TEXT,
         priority TEXT NOT NULL DEFAULT 'normal',
         event_type TEXT,
         dedupe_key TEXT NOT NULL,
@@ -230,6 +231,7 @@ export function initSqlite(path) {
     `);
     ensureColumn(db, 'ticket_rows', 'country', 'TEXT');
     ensureColumn(db, 'ticket_rows', 'last_alert_at', 'TEXT');
+    ensureColumn(db, 'notification_outbox', 'row_key', 'TEXT');
     ensureColumn(db, 'ticket_rows', 'alert_reason', 'TEXT');
   } finally {
     db.close();
@@ -424,7 +426,15 @@ function ruleTrigger(rule, row, previousRow, cycle) {
   };
 }
 
+function telegramNotificationsEnabled() {
+  return String(process.env.TELEGRAM_NOTIFICATIONS_ENABLED || '0') === '1';
+}
+
 function enqueueNotification(db, notification) {
+  if (!telegramNotificationsEnabled()) {
+    return;
+  }
+
   const now = isoNow();
 
   db.prepare(`
@@ -432,6 +442,7 @@ function enqueueNotification(db, notification) {
       channel,
       source_type,
       source_id,
+      row_key,
       priority,
       event_type,
       dedupe_key,
@@ -439,12 +450,13 @@ function enqueueNotification(db, notification) {
       status,
       next_attempt_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
     ON CONFLICT(dedupe_key) DO NOTHING
   `).run(
     notification.channel || 'telegram',
     notification.sourceType,
     notification.sourceId == null ? null : String(notification.sourceId),
+    notification.rowKey || null,
     notification.priority || 'normal',
     notification.eventType || null,
     notification.dedupeKey,
@@ -494,6 +506,7 @@ export function persistCycleToSqlite(cycle, options = {}) {
     const previousRows = previousRowsFromLatestState(db);
     const currentRows = rowsByKey(cycle.rows || []);
     const triggeredAlertKeys = new Set();
+    const enqueueNotifications = options.enqueueNotifications !== false;
 
     db.prepare(`
       INSERT INTO cycles (
@@ -620,7 +633,7 @@ export function persistCycleToSqlite(cycle, options = {}) {
       const eventType = row.alertReason || row.availabilityFreshness || 'availability';
       const key = rowKey(row);
 
-      insertAlert.run(
+      const insertResult = insertAlert.run(
         key,
         eventType,
         eventAt,
@@ -631,18 +644,23 @@ export function persistCycleToSqlite(cycle, options = {}) {
         row.priceMxn ?? null,
         JSON.stringify(row),
       );
+
+      if (Number(insertResult.changes || 0) === 0) {
+        continue;
+      }
+
       const alertEvent = db.prepare(`
         SELECT id, row_key, event_type, event_at
         FROM alert_events
         WHERE row_key = ? AND event_type = ? AND event_at = ?
       `).get(key, eventType, eventAt);
 
-      if (alertEvent) {
+      if (alertEvent && enqueueNotifications) {
         alertEvents.push({ ...alertEvent, row });
       }
     }
 
-    for (const rule of activeRules(db)) {
+    for (const rule of enqueueNotifications ? activeRules(db) : []) {
       const currentRow = currentRows.get(rule.row_key)
         || [...currentRows.values()].find((row) => rowMatchesRule(row, rule));
       const previousRow = previousRows.get(rule.row_key) || previousRows.get(currentRow ? rowKey(currentRow) : '');
@@ -657,6 +675,7 @@ export function persistCycleToSqlite(cycle, options = {}) {
       enqueueNotification(db, {
         sourceType: 'alert_rule',
         sourceId: rule.id,
+        rowKey: key,
         priority: 'high',
         eventType: trigger.eventType,
         dedupeKey: `alert_rule:${rule.id}:${trigger.eventType}:${key}:${trigger.eventAt}`,
@@ -681,6 +700,7 @@ export function persistCycleToSqlite(cycle, options = {}) {
       enqueueNotification(db, {
         sourceType: 'global_alert',
         sourceId: event.id,
+        rowKey: event.row_key,
         priority: 'normal',
         eventType: event.event_type,
         dedupeKey: `global_alert:${event.id}`,
@@ -925,6 +945,7 @@ export function claimPendingNotifications(owner, options = {}) {
       channel: row.channel,
       sourceType: row.source_type,
       sourceId: row.source_id,
+      rowKey: row.row_key,
       priority: row.priority,
       eventType: row.event_type,
       dedupeKey: row.dedupe_key,
@@ -1021,6 +1042,7 @@ export function backfillSqliteFromJson(options = {}) {
     sqlitePath: options.sqlitePath,
     latestCyclePath: options.latestCyclePath,
     state,
+    enqueueNotifications: false,
   });
 
   return true;

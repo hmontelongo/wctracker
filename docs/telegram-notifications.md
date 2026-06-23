@@ -30,6 +30,7 @@ TELEGRAM_MAX_ATTEMPTS=5
 
 `TELEGRAM_CHAT_ID` is required. The bot token alone is not enough to deliver messages.
 When `TELEGRAM_NOTIFICATIONS_ENABLED=0`, both the background outbox sender and create/delete rule confirmations are skipped.
+When disabled, new scrape cycles do not enqueue Telegram notifications. This prevents old events from being sent later when Telegram is re-enabled.
 
 ## Alert rule API
 
