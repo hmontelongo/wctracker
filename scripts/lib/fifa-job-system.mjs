@@ -305,6 +305,18 @@ async function waitForMatchCards(cdp, sessionId, timeoutMs = 18000) {
         return;
       }
 
+      const root = document.documentElement || document.body;
+
+      if (!root) {
+        resolve({
+          ready: false,
+          cardCount: 0,
+          source: 'missing-document-root',
+          textPreview: ''
+        });
+        return;
+      }
+
       const observer = new MutationObserver(() => {
         const nextCards = readCards();
         if (nextCards.length > 0) {
@@ -313,7 +325,7 @@ async function waitForMatchCards(cdp, sessionId, timeoutMs = 18000) {
           resolve({ ready: true, cardCount: nextCards.length, source: 'mutation-observer' });
         }
       });
-      observer.observe(document.documentElement, { childList: true, subtree: true });
+      observer.observe(root, { childList: true, subtree: true });
 
       const timeout = setTimeout(() => {
         observer.disconnect();
