@@ -273,7 +273,7 @@ export async function openShopAndChooseCountry(cdp, sessionId, config, emit = ()
   const state = await evaluate(cdp, sessionId, `
     (() => {
       const country = ${JSON.stringify(config.visitorCountry)};
-      const text = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+      const text = (el) => (el?.innerText || el?.textContent || '').replace(/\\s+/g, ' ').trim();
       document.getElementById('onetrust-accept-btn-handler')?.click();
       const candidates = [...document.querySelectorAll('button, [role="button"], a')];
       const countryButton = candidates.find((el) => text(el).toLowerCase() === country.toLowerCase())
@@ -324,7 +324,7 @@ export async function openShopAndChooseCountry(cdp, sessionId, config, emit = ()
     });
     await evaluate(cdp, sessionId, `
       (() => {
-        const text = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+        const text = (el) => (el?.innerText || el?.textContent || '').replace(/\\s+/g, ' ').trim();
         const candidates = [...document.querySelectorAll('button, [role="button"], a, [tabindex]')];
         const browse = candidates.find((el) => /^browse matches$/i.test(text(el)))
           || candidates.find((el) => /browse matches/i.test(text(el)))
@@ -358,7 +358,7 @@ export async function openShopAndChooseCountry(cdp, sessionId, config, emit = ()
 async function waitForMatchCards(cdp, sessionId, timeoutMs = 18000) {
   return evaluate(cdp, sessionId, `
     (() => new Promise((resolve) => {
-      const text = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+      const text = (el) => (el?.innerText || el?.textContent || '').replace(/\\s+/g, ' ').trim();
       const cardSelector = 'button.match, button[class*="match"]';
       const readCards = () => [...document.querySelectorAll(cardSelector)]
         .filter((el) => /\\bM\\d+\\b/i.test(text(el)));
@@ -434,7 +434,7 @@ export async function collectMatchCards(cdp, sessionId) {
   return evaluate(cdp, sessionId, `
     (async () => {
       const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-      const text = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+      const text = (el) => (el?.innerText || el?.textContent || '').replace(/\\s+/g, ' ').trim();
       let lastCount = 0;
       let stableRounds = 0;
 
@@ -449,7 +449,10 @@ export async function collectMatchCards(cdp, sessionId) {
           stableRounds = 0;
         }
 
-        window.scrollTo(0, document.body.scrollHeight);
+        const scrollTarget = document.scrollingElement || document.documentElement || document.body;
+        if (scrollTarget) {
+          window.scrollTo(0, scrollTarget.scrollHeight || 0);
+        }
         await sleep(250);
 
         if (stableRounds >= 2) {
@@ -489,7 +492,7 @@ async function clickMatchCard(cdp, sessionId, card) {
     (() => {
       const wantedCode = ${JSON.stringify(card.matchCode)};
       const wantedText = ${JSON.stringify(normalizeSpace(card.text))};
-      const text = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+      const text = (el) => (el?.innerText || el?.textContent || '').replace(/\\s+/g, ' ').trim();
       const cards = [...document.querySelectorAll('button.match, button[class*="match"]')]
         .filter((el) => /\\bM\\d+\\b/i.test(text(el)));
       const match = cards.find((el) => wantedCode && text(el).includes(wantedCode))
@@ -534,7 +537,7 @@ async function waitForLoungeCapture(bucket, minCapturedAtMs, timeoutMs = 15000) 
 async function ensureMatchList(session, config, emit = () => {}) {
   const current = await evaluate(session.cdp, session.sessionId, `
     (() => {
-      const text = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+      const text = (el) => (el?.innerText || el?.textContent || '').replace(/\\s+/g, ' ').trim();
       const cardCount = [...document.querySelectorAll('button.match, button[class*="match"]')]
         .filter((el) => /\\bM\\d+\\b/i.test(text(el))).length;
       return { cardCount, url: location.href };
@@ -548,7 +551,7 @@ async function ensureMatchList(session, config, emit = () => {}) {
   emit({ event: 'match_list_return_started', url: current.url, error: current.error });
   await evaluate(session.cdp, session.sessionId, `
     (() => {
-      const text = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+      const text = (el) => (el?.innerText || el?.textContent || '').replace(/\\s+/g, ' ').trim();
       const candidates = [...document.querySelectorAll('button, [role="button"], a')];
       const back = candidates.find((el) => /^(back|volver|atras|regresar)$/i.test(text(el)))
         || candidates.find((el) => /back|volver|atras|regresar/i.test(el.getAttribute('aria-label') || ''));
