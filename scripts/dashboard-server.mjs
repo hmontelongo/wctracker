@@ -7,13 +7,13 @@ import {
   DEFAULT_LATEST_CYCLE_PATH,
   DEFAULT_STATE_PATH,
   configFromEnv,
-  knownTargetsFromPreviousState,
-  loadPreviousState,
-  persistCycle,
-  runFifaFastCycle,
-  runFifaCycle,
 } from './lib/fifa-job-system.mjs';
-import { backfillSqliteFromJson, readLatestFromSqlite } from './lib/sqlite-store.mjs';
+import {
+  publishLatestCycleFromQueue,
+  runDiscoveryOnce,
+  runWorkerPoolOnce,
+} from './lib/fifa-orchestrator.mjs';
+import { backfillSqliteFromJson, readLatestFromSqlite, readQueueStats } from './lib/sqlite-store.mjs';
 
 loadDotEnv();
 
@@ -32,6 +32,8 @@ const jobState = {
   lastError: null,
   startedAt: null,
   completedAt: null,
+  discoveryLoopRunning: false,
+  workerLoopRunning: false,
   events: [],
 };
 
@@ -55,6 +57,7 @@ function latestState() {
     job: jobState,
     latestCycle: sqlite.latestCycle || readJson(DEFAULT_LATEST_CYCLE_PATH, null),
     state: sqlite.state || readJson(DEFAULT_STATE_PATH, null),
+    queue: readQueueStats(),
   };
 }
 
@@ -106,86 +109,38 @@ function configForRun(overrides = {}) {
     fastPollEnabled: overrides.fastPollEnabled,
     fullDiscoveryEvery: overrides.fullDiscoveryEvery,
     matchJobAttempts: overrides.matchJobAttempts,
+    discoveryIntervalMs: overrides.discoveryIntervalMs,
+    discoveryLeaseMs: overrides.discoveryLeaseMs,
+    jobLeaseMs: overrides.jobLeaseMs,
+    jobRetryDelayMs: overrides.jobRetryDelayMs,
+    queueJobAttempts: overrides.queueJobAttempts,
+    workerIdleMs: overrides.workerIdleMs,
   });
 }
 
-function shouldRunFullDiscovery(config, previousState, overrides = {}) {
-  if (overrides.fullDiscovery) {
-    return true;
-  }
-
-  if (!config.fastPollEnabled) {
-    return true;
-  }
-
-  if (knownTargetsFromPreviousState(previousState, config.shopUrl).length === 0) {
-    return true;
-  }
-
-  const previousTick = Number(previousState?.lastCycleSummary?.tick || 0);
-  return config.fullDiscoveryEvery > 0 && previousTick > 0 && previousTick % config.fullDiscoveryEvery === 0;
-}
-
-async function runOneCycle(overrides = {}) {
-  if (jobState.running) {
-    throw new Error('A cycle is already running.');
-  }
-
+async function runOneSweep(overrides = {}) {
   const config = configForRun(overrides);
-  const previousState = loadPreviousState(config.statePath);
-  const fullDiscovery = shouldRunFullDiscovery(config, previousState, overrides);
   jobState.running = true;
   jobState.startedAt = new Date().toISOString();
   jobState.completedAt = null;
   jobState.lastError = null;
   broadcast({
-    event: 'dashboard_cycle_started',
+    event: 'dashboard_sweep_started',
     visitorCountry: config.visitorCountry,
     matchConcurrency: config.matchConcurrency,
-    mode: fullDiscovery ? 'browser-discovery' : 'fast-target-poll',
+    discoveryIntervalMs: config.discoveryIntervalMs,
   });
 
   try {
-    let cycle;
-
-    if (fullDiscovery) {
-      cycle = await runFifaCycle(config, previousState, broadcast);
-    } else {
-      try {
-        cycle = await runFifaFastCycle(config, previousState, broadcast);
-
-        if (cycle.rowCount === 0 || cycle.failedMatchCount >= cycle.matchCardsScanned) {
-          throw new Error('Fast poll returned no usable ticket rows.');
-        }
-      } catch (error) {
-        broadcast({
-          event: 'fast_cycle_failed_fallback',
-          error: error.message,
-        });
-        cycle = await runFifaCycle(config, previousState, broadcast);
-      }
-    }
-
-    const paths = persistCycle(cycle, config);
-    jobState.completedAt = cycle.cycleCompletedAt;
-    broadcast({
-      event: 'dashboard_cycle_completed',
-      mode: cycle.mode,
-      matchCardsFound: cycle.matchCardsFound,
-      matchCardsScanned: cycle.matchCardsScanned,
-      failedMatchCount: cycle.failedMatchCount,
-      partial: cycle.partial,
-      rowCount: cycle.rowCount,
-      availableRowCount: cycle.availableRowCount,
-      alertCount: cycle.alerts.length,
-      latestCyclePath: paths.latestCyclePath,
-      historyPath: paths.historyPath,
-    });
-    return { cycle, paths };
+    await runDiscoveryOnce(config, broadcast);
+    const sweep = await runWorkerPoolOnce(config, broadcast);
+    const published = publishLatestCycleFromQueue(config, broadcast);
+    jobState.completedAt = published?.cycle?.cycleCompletedAt || new Date().toISOString();
+    return { sweep, published };
   } catch (error) {
     jobState.lastError = error.message;
     broadcast({
-      event: 'dashboard_cycle_failed',
+      event: 'dashboard_sweep_failed',
       error: error.message,
     });
     throw error;
@@ -194,12 +149,88 @@ async function runOneCycle(overrides = {}) {
   }
 }
 
+async function discoveryLoop(overrides = {}) {
+  jobState.discoveryLoopRunning = true;
+
+  try {
+    while (jobState.tickerRunning) {
+      const config = configForRun(overrides);
+      const startedAt = Date.now();
+
+      try {
+        await runDiscoveryOnce(config, broadcast);
+      } catch (error) {
+        jobState.lastError = error.message;
+        broadcast({ event: 'discovery_loop_error', error: error.message });
+      }
+
+      const remaining = Math.max(0, config.discoveryIntervalMs - (Date.now() - startedAt));
+      await sleep(remaining);
+    }
+  } finally {
+    jobState.discoveryLoopRunning = false;
+  }
+}
+
+async function workerLoop(overrides = {}) {
+  jobState.workerLoopRunning = true;
+
+  try {
+    while (jobState.tickerRunning) {
+      const config = configForRun(overrides);
+
+      try {
+        const sweep = await runWorkerPoolOnce(config, broadcast);
+
+        if (sweep.processed > 0) {
+          const published = publishLatestCycleFromQueue(config, broadcast);
+          jobState.completedAt = published?.cycle?.cycleCompletedAt || jobState.completedAt;
+        }
+
+        if (sweep.claimed === 0) {
+          await sleep(config.workerIdleMs);
+        }
+      } catch (error) {
+        jobState.lastError = error.message;
+        broadcast({ event: 'worker_loop_error', error: error.message });
+        await sleep(config.workerIdleMs);
+      }
+    }
+  } finally {
+    jobState.workerLoopRunning = false;
+  }
+}
+
+function startTicker(overrides = {}) {
+  if (jobState.tickerRunning) {
+    return false;
+  }
+
+  const config = configForRun(overrides);
+  jobState.tickerRunning = true;
+  jobState.running = true;
+  jobState.startedAt = new Date().toISOString();
+  jobState.completedAt = null;
+  jobState.tickerIntervalMs = config.discoveryIntervalMs;
+  broadcast({
+    event: 'dashboard_ticker_started',
+    intervalMs: config.discoveryIntervalMs,
+    discoveryIntervalMs: config.discoveryIntervalMs,
+    workerIdleMs: config.workerIdleMs,
+    autostart: Boolean(overrides.autostart),
+  });
+  discoveryLoop(overrides).catch(() => {});
+  workerLoop(overrides).catch(() => {});
+
+  return true;
+}
+
 async function tickerLoop(overrides = {}) {
   while (jobState.tickerRunning) {
     const startedAt = Date.now();
 
     try {
-      await runOneCycle(overrides);
+      await runOneSweep(overrides);
     } catch {
       // Error already broadcast.
     }
@@ -253,13 +284,13 @@ const server = createServer(async (request, response) => {
   }
 
   if (url.pathname === '/api/run-cycle' && request.method === 'POST') {
-    if (jobState.running) {
-      sendJson(response, 409, { accepted: false, error: 'A cycle is already running.', job: jobState });
+    if (jobState.tickerRunning) {
+      sendJson(response, 409, { accepted: false, error: 'The scheduler is already running.', job: jobState });
       return;
     }
 
     const body = await readBody(request);
-    runOneCycle(body).catch(() => {});
+    runOneSweep(body).catch(() => {});
     sendJson(response, 202, { accepted: true, job: jobState });
     return;
   }
@@ -267,15 +298,7 @@ const server = createServer(async (request, response) => {
   if (url.pathname === '/api/start-ticker' && request.method === 'POST') {
     const body = await readBody(request);
 
-    if (!jobState.tickerRunning) {
-      jobState.tickerRunning = true;
-      jobState.tickerIntervalMs = Number(body.intervalMs || jobState.tickerIntervalMs || 60000);
-      broadcast({
-        event: 'dashboard_ticker_started',
-        intervalMs: jobState.tickerIntervalMs,
-      });
-      tickerLoop(body).catch(() => {});
-    }
+    startTicker(body);
 
     sendJson(response, 202, { accepted: true, job: jobState });
     return;
@@ -283,6 +306,7 @@ const server = createServer(async (request, response) => {
 
   if (url.pathname === '/api/stop-ticker' && request.method === 'POST') {
     jobState.tickerRunning = false;
+    jobState.running = false;
     broadcast({ event: 'dashboard_ticker_stopped' });
     sendJson(response, 202, { accepted: true, job: jobState });
     return;
@@ -295,12 +319,6 @@ server.listen(port, host, () => {
   console.log(`Dashboard listening on http://${host}:${port}`);
 
   if (autostartTicker && !jobState.tickerRunning) {
-    jobState.tickerRunning = true;
-    broadcast({
-      event: 'dashboard_ticker_started',
-      intervalMs: jobState.tickerIntervalMs,
-      autostart: true,
-    });
-    tickerLoop({}).catch(() => {});
+    startTicker({ autostart: true });
   }
 });

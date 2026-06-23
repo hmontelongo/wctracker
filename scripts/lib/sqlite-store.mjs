@@ -25,6 +25,15 @@ function ensureColumn(db, table, column, definition) {
   }
 }
 
+function isoNow() {
+  return new Date().toISOString();
+}
+
+function toMs(value) {
+  const parsed = Date.parse(value || '');
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 export function initSqlite(path) {
   const db = openDatabase(path);
 
@@ -96,6 +105,82 @@ export function initSqlite(path) {
 
       CREATE INDEX IF NOT EXISTS ticket_rows_available_idx
         ON ticket_rows (available, match_code);
+
+      CREATE TABLE IF NOT EXISTS runtime_locks (
+        name TEXT PRIMARY KEY,
+        owner TEXT NOT NULL,
+        lease_expires_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS discovery_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        status TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        completed_at TEXT,
+        visitor_country TEXT,
+        shop_url TEXT,
+        cards_found INTEGER NOT NULL DEFAULT 0,
+        jobs_created INTEGER NOT NULL DEFAULT 0,
+        error TEXT,
+        payload_json TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS discovery_runs_started_idx
+        ON discovery_runs (started_at);
+
+      CREATE TABLE IF NOT EXISTS match_jobs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        discovery_run_id INTEGER,
+        job_key TEXT NOT NULL,
+        match_code TEXT,
+        status TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        max_attempts INTEGER NOT NULL DEFAULT 3,
+        available_at TEXT NOT NULL,
+        lease_owner TEXT,
+        lease_expires_at TEXT,
+        started_at TEXT,
+        completed_at TEXT,
+        checked_at TEXT,
+        last_error TEXT,
+        card_json TEXT NOT NULL,
+        target_json TEXT,
+        result_json TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (discovery_run_id) REFERENCES discovery_runs(id)
+          ON DELETE SET NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS match_jobs_status_available_idx
+        ON match_jobs (status, available_at);
+
+      CREATE INDEX IF NOT EXISTS match_jobs_match_code_idx
+        ON match_jobs (match_code);
+
+      CREATE UNIQUE INDEX IF NOT EXISTS match_jobs_active_key_unique
+        ON match_jobs (job_key)
+        WHERE status IN ('pending', 'running');
+
+      CREATE TABLE IF NOT EXISTS alert_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        row_key TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        event_at TEXT NOT NULL,
+        match_code TEXT,
+        package_title TEXT,
+        seating_code TEXT,
+        available_quantity INTEGER,
+        price_mxn INTEGER,
+        notified_at TEXT,
+        payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS alert_events_unique
+        ON alert_events (row_key, event_type, event_at);
     `);
     ensureColumn(db, 'ticket_rows', 'country', 'TEXT');
     ensureColumn(db, 'ticket_rows', 'last_alert_at', 'TEXT');
@@ -264,6 +349,38 @@ export function persistCycleToSqlite(cycle, options = {}) {
       );
     }
 
+    const insertAlert = db.prepare(`
+      INSERT INTO alert_events (
+        row_key,
+        event_type,
+        event_at,
+        match_code,
+        package_title,
+        seating_code,
+        available_quantity,
+        price_mxn,
+        payload_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(row_key, event_type, event_at) DO NOTHING
+    `);
+
+    for (const row of cycle.alerts || []) {
+      const eventAt = row.lastAlertAt || row.lastChangedAt || row.checkedAt || cycle.cycleCompletedAt;
+      const eventType = row.alertReason || row.availabilityFreshness || 'availability';
+
+      insertAlert.run(
+        rowKey(row),
+        eventType,
+        eventAt,
+        row.matchCode ?? null,
+        row.packageTitle ?? null,
+        row.seatingCode ?? null,
+        Number(row.availableQuantity ?? 0),
+        row.priceMxn ?? null,
+        JSON.stringify(row),
+      );
+    }
+
     db.prepare(`
       INSERT INTO latest_state (id, state_json, latest_cycle_json, updated_at)
       VALUES (1, ?, ?, ?)
@@ -329,4 +446,286 @@ export function backfillSqliteFromJson(options = {}) {
   });
 
   return true;
+}
+
+export function tryAcquireLock(name, owner, ttlMs, options = {}) {
+  initSqlite(options.sqlitePath);
+  const db = openDatabase(options.sqlitePath);
+  const now = isoNow();
+  const leaseExpiresAt = new Date(Date.now() + ttlMs).toISOString();
+
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    const existing = db.prepare('SELECT owner, lease_expires_at FROM runtime_locks WHERE name = ?').get(name);
+
+    if (existing && existing.owner !== owner && toMs(existing.lease_expires_at) > Date.now()) {
+      db.exec('COMMIT');
+      return false;
+    }
+
+    db.prepare(`
+      INSERT INTO runtime_locks (name, owner, lease_expires_at, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(name) DO UPDATE SET
+        owner = excluded.owner,
+        lease_expires_at = excluded.lease_expires_at,
+        updated_at = excluded.updated_at
+    `).run(name, owner, leaseExpiresAt, now);
+    db.exec('COMMIT');
+    return true;
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  } finally {
+    db.close();
+  }
+}
+
+export function releaseLock(name, owner, options = {}) {
+  initSqlite(options.sqlitePath);
+  const db = openDatabase(options.sqlitePath);
+
+  try {
+    db.prepare('DELETE FROM runtime_locks WHERE name = ? AND owner = ?').run(name, owner);
+  } finally {
+    db.close();
+  }
+}
+
+export function recordDiscoveryResult(discovery, config, options = {}) {
+  initSqlite(options.sqlitePath);
+  const db = openDatabase(options.sqlitePath);
+  const now = isoNow();
+  const startedAt = discovery.startedAt || now;
+  const completedAt = discovery.completedAt || now;
+  const cards = discovery.allCards || [];
+  const jobs = discovery.jobs || [];
+  const maxAttempts = Math.max(1, Number(config.queueJobAttempts || config.matchJobAttempts || 3));
+
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    const result = db.prepare(`
+      INSERT INTO discovery_runs (
+        status,
+        started_at,
+        completed_at,
+        visitor_country,
+        shop_url,
+        cards_found,
+        jobs_created,
+        error,
+        payload_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      discovery.error ? 'failed' : 'completed',
+      startedAt,
+      completedAt,
+      config.visitorCountry ?? null,
+      config.shopUrl ?? null,
+      cards.length,
+      jobs.length,
+      discovery.error ?? null,
+      JSON.stringify(discovery),
+    );
+    const discoveryRunId = Number(result.lastInsertRowid);
+    const insertJob = db.prepare(`
+      INSERT INTO match_jobs (
+        discovery_run_id,
+        job_key,
+        match_code,
+        status,
+        max_attempts,
+        available_at,
+        card_json,
+        updated_at
+      ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)
+      ON CONFLICT(job_key) WHERE status IN ('pending', 'running') DO NOTHING
+    `);
+    let inserted = 0;
+
+    for (const job of jobs) {
+      const insertResult = insertJob.run(
+        discoveryRunId,
+        job.jobKey,
+        job.matchCode ?? null,
+        maxAttempts,
+        now,
+        JSON.stringify(job),
+        now,
+      );
+      inserted += Number(insertResult.changes || 0);
+    }
+
+    db.exec('COMMIT');
+    return {
+      discoveryRunId,
+      cardsFound: cards.length,
+      jobsSeen: jobs.length,
+      jobsInserted: inserted,
+    };
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  } finally {
+    db.close();
+  }
+}
+
+export function claimNextMatchJob(owner, leaseMs, options = {}) {
+  initSqlite(options.sqlitePath);
+  const db = openDatabase(options.sqlitePath);
+  const now = isoNow();
+  const leaseExpiresAt = new Date(Date.now() + leaseMs).toISOString();
+
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    const job = db.prepare(`
+      SELECT *
+      FROM match_jobs
+      WHERE (
+        status = 'pending'
+        OR (status = 'running' AND lease_expires_at <= ?)
+      )
+      AND available_at <= ?
+      AND attempts < max_attempts
+      ORDER BY available_at ASC, id ASC
+      LIMIT 1
+    `).get(now, now);
+
+    if (!job) {
+      db.exec('COMMIT');
+      return null;
+    }
+
+    db.prepare(`
+      UPDATE match_jobs
+      SET status = 'running',
+        attempts = attempts + 1,
+        lease_owner = ?,
+        lease_expires_at = ?,
+        started_at = COALESCE(started_at, ?),
+        updated_at = ?
+      WHERE id = ?
+    `).run(owner, leaseExpiresAt, now, now, job.id);
+    db.exec('COMMIT');
+
+    return {
+      ...job,
+      attempts: Number(job.attempts) + 1,
+      card: JSON.parse(job.card_json),
+    };
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  } finally {
+    db.close();
+  }
+}
+
+export function completeMatchJob(jobId, owner, result, options = {}) {
+  initSqlite(options.sqlitePath);
+  const db = openDatabase(options.sqlitePath);
+  const now = isoNow();
+  const retryDelayMs = Math.max(0, Number(options.retryDelayMs ?? 15000));
+
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    const job = db.prepare('SELECT attempts, max_attempts FROM match_jobs WHERE id = ? AND lease_owner = ?').get(jobId, owner);
+
+    if (!job) {
+      db.exec('COMMIT');
+      return { updated: false };
+    }
+
+    const canRetry = !result?.ok && Number(job.attempts) < Number(job.max_attempts);
+    const status = result?.ok ? 'succeeded' : canRetry ? 'pending' : 'failed_terminal';
+    const availableAt = canRetry
+      ? new Date(Date.now() + retryDelayMs * Number(job.attempts || 1)).toISOString()
+      : now;
+
+    db.prepare(`
+      UPDATE match_jobs
+      SET status = ?,
+        available_at = ?,
+        lease_owner = NULL,
+        lease_expires_at = NULL,
+        completed_at = ?,
+        checked_at = ?,
+        last_error = ?,
+        target_json = ?,
+        result_json = ?,
+        updated_at = ?
+      WHERE id = ?
+    `).run(
+      status,
+      availableAt,
+      now,
+      result?.checkedAt ?? now,
+      result?.error ?? null,
+      result?.target ? JSON.stringify(result.target) : null,
+      JSON.stringify(result),
+      now,
+      jobId,
+    );
+    db.exec('COMMIT');
+
+    return { updated: true, status, willRetry: canRetry };
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  } finally {
+    db.close();
+  }
+}
+
+export function readLatestMatchJobResults(options = {}) {
+  initSqlite(options.sqlitePath);
+  const db = openDatabase(options.sqlitePath);
+
+  try {
+    const rows = db.prepare(`
+      SELECT job_key, result_json, completed_at
+      FROM match_jobs
+      WHERE result_json IS NOT NULL
+      AND status IN ('succeeded', 'failed_terminal')
+      ORDER BY completed_at DESC, id DESC
+    `).all();
+    const latest = new Map();
+
+    for (const row of rows) {
+      if (!latest.has(row.job_key)) {
+        latest.set(row.job_key, JSON.parse(row.result_json));
+      }
+    }
+
+    return [...latest.values()];
+  } finally {
+    db.close();
+  }
+}
+
+export function readQueueStats(options = {}) {
+  initSqlite(options.sqlitePath);
+  const db = openDatabase(options.sqlitePath);
+
+  try {
+    const statusRows = db.prepare(`
+      SELECT status, COUNT(*) AS count
+      FROM match_jobs
+      GROUP BY status
+    `).all();
+    const latestDiscovery = db.prepare(`
+      SELECT *
+      FROM discovery_runs
+      ORDER BY started_at DESC, id DESC
+      LIMIT 1
+    `).get();
+
+    return {
+      jobsByStatus: Object.fromEntries(statusRows.map((row) => [row.status, Number(row.count)])),
+      latestDiscovery,
+    };
+  } finally {
+    db.close();
+  }
 }

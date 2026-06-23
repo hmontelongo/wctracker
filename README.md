@@ -73,22 +73,22 @@ FIFA discovery:
 
 FIFA ticker:
 
-- runs fast polls against known FIFA lounge targets between full discovery cycles
-- rediscovers match cards from the FIFA page on the configured full-discovery cadence
-- creates one match job per purchasable/clickable match card exposed by the selected shop context
-- runs match jobs in parallel, bounded by `FIFA_MATCH_CONCURRENCY`
-- each job opens its match and captures all ticket-type rows
+- runs discovery independently on `FIFA_DISCOVERY_INTERVAL_MS`
+- stores each discovery run in SQLite
+- creates one durable match job per purchasable/clickable match card exposed by the selected shop context
+- lets workers claim jobs through SQLite leases and retry failed jobs
+- runs match workers in parallel, bounded by `FIFA_MATCH_CONCURRENCY`
+- each job opens its match and captures all ticket-type rows through the rendered FIFA flow
 - stores normalized rows and raw ticket-type/seating-section data
 - stores per-row freshness fields such as `checkedAt`, `becameAvailableAt`, `lastChangedAt`, and `availabilityFreshness`
-- emits `availability_alert` when a ticket row becomes available or quantity increases
-- stores latest state in `artifacts/fifa-ticket-state.json`
-- stores full timestamped cycle snapshots in `artifacts/fifa-cycles/`
+- stores alert events when a ticket row becomes available or quantity increases
+- stores latest state, jobs, discovery runs, ticket rows, and alert events in SQLite
 
-The selected country is the FIFA buyer/shop context, not a match-location filter. Each cycle scans every purchasable/clickable match card exposed by that shop, regardless of where the match is played. Cards explicitly routed to another country shop, marked currently unavailable, or disabled are skipped. `FIFA_MATCH_CONCURRENCY` controls how many match jobs run in parallel. `FIFA_DISCOVERY_ATTEMPTS` controls retries before a no-card page state is treated as a failed cycle.
+The selected country is the FIFA buyer/shop context, not a match-location filter. Discovery scans every purchasable/clickable match card exposed by that shop, regardless of where the match is played. Cards explicitly routed to another country shop, marked currently unavailable, or disabled are skipped. `FIFA_DISCOVERY_ATTEMPTS` controls retries before a no-card page state is treated as a failed discovery.
 
-`FIFA_FAST_POLL_ENABLED=1` keeps freshness low by reusing known match targets between full discovery cycles. Fast polling still opens the FIFA shop page first to establish the browser context, but it does not wait for the full match-card list before fetching known `/next-api/lounges` targets. `FIFA_FULL_DISCOVERY_EVERY` controls how often the slower discovery path refreshes the target list.
+The main path is discovery plus durable match jobs. Fast target polling is not used as the primary freshness signal because direct `/next-api/lounges` requests can return `401`; discovery is the source of truth for newly listed matches.
 
-The local dashboard process runs one coordinator cycle at a time. A cycle discovers the purchasable match cards, then runs bounded parallel match jobs inside the same Node process. `FIFA_MATCH_JOB_ATTEMPTS` controls per-match retries for transient browser/navigation failures. Starting multiple dashboard/ticker processes can overlap coordinators because the in-memory guard is per process; use a shared SQLite/D1 lock before intentionally running multiple coordinators against the same database.
+The local dashboard process runs two internal loops: a discovery loop and a worker loop. SQLite locks prevent duplicate discovery coordinators, and SQLite job leases let multiple processes claim different match jobs without stepping on each other. `FIFA_MATCH_JOB_ATTEMPTS` controls in-browser retries during a job; `FIFA_QUEUE_JOB_ATTEMPTS` controls how many times a durable queued job can be retried after a failed lease attempt.
 
 Dashboard:
 

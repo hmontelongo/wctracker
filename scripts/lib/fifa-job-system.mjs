@@ -31,10 +31,17 @@ export function configFromEnv(apiKey, overrides = {}) {
   const fastPollEnabled = String(overrides.fastPollEnabled ?? process.env.FIFA_FAST_POLL_ENABLED ?? '1') !== '0';
   const fullDiscoveryEvery = Math.max(0, Number(overrides.fullDiscoveryEvery ?? process.env.FIFA_FULL_DISCOVERY_EVERY ?? 10));
   const fastFetchConcurrency = Math.max(1, Number(overrides.fastFetchConcurrency || process.env.FIFA_FAST_FETCH_CONCURRENCY || matchConcurrency));
+  const discoveryIntervalMs = Math.max(5000, Number(overrides.discoveryIntervalMs || process.env.FIFA_DISCOVERY_INTERVAL_MS || Math.min(intervalMs, 30000)));
+  const discoveryLeaseMs = Math.max(15000, Number(overrides.discoveryLeaseMs || process.env.FIFA_DISCOVERY_LEASE_MS || 90000));
+  const jobLeaseMs = Math.max(30000, Number(overrides.jobLeaseMs || process.env.FIFA_JOB_LEASE_MS || 180000));
+  const jobRetryDelayMs = Math.max(1000, Number(overrides.jobRetryDelayMs || process.env.FIFA_JOB_RETRY_DELAY_MS || 15000));
+  const queueJobAttempts = Math.max(1, Number(overrides.queueJobAttempts || process.env.FIFA_QUEUE_JOB_ATTEMPTS || 3));
+  const workerIdleMs = Math.max(250, Number(overrides.workerIdleMs || process.env.FIFA_WORKER_IDLE_MS || 1000));
   const alertRetentionMs = Math.max(0, Number(overrides.alertRetentionMs ?? process.env.FIFA_ALERT_RETENTION_MS ?? 10 * 60 * 1000));
   const matchJobAttempts = Math.max(1, Number(overrides.matchJobAttempts ?? process.env.FIFA_MATCH_JOB_ATTEMPTS ?? 2));
   const statePath = overrides.statePath || process.env.FIFA_STATE_PATH || DEFAULT_STATE_PATH;
   const latestCyclePath = overrides.latestCyclePath || process.env.FIFA_LATEST_CYCLE_PATH || DEFAULT_LATEST_CYCLE_PATH;
+  const writeJsonArtifacts = String(overrides.writeJsonArtifacts ?? process.env.FIFA_WRITE_JSON_ARTIFACTS ?? '0') === '1';
   const browserUrl = buildBrowserUrl(apiKey, {
     proxy_region: overrides.proxyRegion || process.env.ZENROWS_BROWSER_PROXY_REGION,
     proxy_country: overrides.proxyCountry || process.env.ZENROWS_BROWSER_PROXY_COUNTRY,
@@ -52,10 +59,17 @@ export function configFromEnv(apiKey, overrides = {}) {
     fastPollEnabled,
     fullDiscoveryEvery,
     fastFetchConcurrency,
+    discoveryIntervalMs,
+    discoveryLeaseMs,
+    jobLeaseMs,
+    jobRetryDelayMs,
+    queueJobAttempts,
+    workerIdleMs,
     alertRetentionMs,
     matchJobAttempts,
     statePath,
     latestCyclePath,
+    writeJsonArtifacts,
     browserUrl,
     publicBrowserUrl: redactZenRowsUrl(browserUrl),
   };
@@ -195,7 +209,7 @@ function installNetworkCapture(cdp, sessionId, bucket) {
   });
 }
 
-async function createBrowserSession(config) {
+export async function createBrowserSession(config) {
   const cdp = new CdpConnection(config.browserUrl.toString());
   await cdp.connect();
   const createdTarget = await cdp.send('Target.createTarget', { url: 'about:blank' });
@@ -765,7 +779,7 @@ function isRetryableMatchResult(result) {
     .test(result?.error || '');
 }
 
-async function runMatchJobWithRetries(config, session, card, emit = () => {}) {
+export async function runMatchJobWithRetries(config, session, card, emit = () => {}) {
   let result = null;
 
   for (let attempt = 1; attempt <= config.matchJobAttempts; attempt += 1) {
@@ -1321,12 +1335,9 @@ function activeAlertRows(rows, retentionMs, referenceAt) {
     .sort((a, b) => Date.parse(alertTimestamp(b)) - Date.parse(alertTimestamp(a)));
 }
 
-export async function runFifaCycle(config, previousState = null, emit = () => {}) {
-  const cycleStartedAt = new Date().toISOString();
-  emit({ event: 'cycle_started', cycleStartedAt });
-  const discovery = await discoverMatchJobs(config, emit);
-  const matchResults = await runMatchJobsInPool(config, discovery.jobs, emit);
-  const cycleCompletedAt = new Date().toISOString();
+export function buildCycleFromMatchResults(config, previousState = null, matchResults = [], meta = {}) {
+  const cycleStartedAt = meta.cycleStartedAt || new Date().toISOString();
+  const cycleCompletedAt = meta.cycleCompletedAt || new Date().toISOString();
   const failedMatchCount = matchResults.filter((result) => !result?.ok).length;
   const refreshedRows = enrichRowsWithFreshness(
     previousState,
@@ -1339,22 +1350,24 @@ export async function runFifaCycle(config, previousState = null, emit = () => {}
   const availableRows = rows.filter((row) => row.available);
   const alerts = activeAlertRows(rows, config.alertRetentionMs, cycleCompletedAt);
   const knownTargets = knownTargetsFromMatchResults(matchResults, config.shopUrl);
-  const cycle = {
+
+  return {
     tick: previousState?.lastCycleSummary?.tick ? previousState.lastCycleSummary.tick + 1 : 1,
     cycleStartedAt,
     cycleCompletedAt,
     partial: failedMatchCount > 0,
-    mode: 'browser-discovery',
-    transport: 'ZenRows Scraping Browser',
+    mode: meta.mode || 'job-queue',
+    transport: meta.transport || 'ZenRows Scraping Browser',
     endpoint: config.publicBrowserUrl,
     shopUrl: config.shopUrl,
     visitorCountry: config.visitorCountry,
     matchConcurrency: config.matchConcurrency,
+    fastFetchConcurrency: meta.fastFetchConcurrency,
     alertRetentionMs: config.alertRetentionMs,
-    initialState: discovery.initialState,
-    matchCardsFound: discovery.allCards.length,
-    matchCardsScanned: discovery.jobs.length,
-    skippedCards: discovery.allCards.filter((card) => !discovery.jobs.includes(card)),
+    initialState: meta.initialState || null,
+    matchCardsFound: meta.matchCardsFound ?? matchResults.length,
+    matchCardsScanned: meta.matchCardsScanned ?? matchResults.length,
+    skippedCards: meta.skippedCards || [],
     matches: matchResults,
     failedMatchCount,
     knownTargets,
@@ -1364,6 +1377,23 @@ export async function runFifaCycle(config, previousState = null, emit = () => {}
     availableRows,
     alerts,
   };
+}
+
+export async function runFifaCycle(config, previousState = null, emit = () => {}) {
+  const cycleStartedAt = new Date().toISOString();
+  emit({ event: 'cycle_started', cycleStartedAt });
+  const discovery = await discoverMatchJobs(config, emit);
+  const matchResults = await runMatchJobsInPool(config, discovery.jobs, emit);
+  const cycle = buildCycleFromMatchResults(config, previousState, matchResults, {
+    cycleStartedAt,
+    cycleCompletedAt: new Date().toISOString(),
+    mode: 'browser-discovery',
+    transport: 'ZenRows Scraping Browser',
+    initialState: discovery.initialState,
+    matchCardsFound: discovery.allCards.length,
+    matchCardsScanned: discovery.jobs.length,
+    skippedCards: discovery.allCards.filter((card) => !discovery.jobs.includes(card)),
+  });
 
   emit({
     event: 'cycle_completed',
@@ -1386,11 +1416,14 @@ export function persistCycle(cycle, config) {
   const statePath = config.statePath || DEFAULT_STATE_PATH;
   const historyPath = cycleArtifactPath(cycle.cycleStartedAt);
 
-  writeJson(latestCyclePath, cycle);
-  writeJson(historyPath, cycle);
   const state = stateFromCycle(cycle, latestCyclePath);
-  writeJson(statePath, state);
   persistCycleToSqlite(cycle, { latestCyclePath, state });
+
+  if (config.writeJsonArtifacts) {
+    writeJson(latestCyclePath, cycle);
+    writeJson(historyPath, cycle);
+    writeJson(statePath, state);
+  }
 
   return {
     latestCyclePath,
