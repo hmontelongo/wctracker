@@ -1,15 +1,3 @@
-const state = {
-  latestCycle: null,
-  job: null,
-  selectedRow: null,
-  selectedKey: null,
-  drawerType: null,
-  drawerMatchCode: null,
-  filter: 'available',
-  isAdmin: location.pathname.replace(/\/$/, '').endsWith('/admin') || new URLSearchParams(location.search).has('admin'),
-  events: [],
-};
-
 const DEFAULT_ALERT_RETENTION_MS = 10 * 60 * 1000;
 
 const ZONE_COLORS = {
@@ -28,92 +16,29 @@ const ZONE_DESCRIPTIONS = {
   'FIFA Pavilion': 'Un retiro exclusivo en el perímetro seguro junto al estadio, con bebidas y cocina callejera gourmet antes y después del partido.',
 };
 
-const els = {
-  statusPill: document.getElementById('statusPill'),
-  statusText: document.getElementById('statusText'),
-  freshnessText: document.getElementById('freshnessText'),
-  shopContextLabel: document.getElementById('shopContextLabel'),
-  countryInput: document.getElementById('countryInput'),
-  concurrencyInput: document.getElementById('concurrencyInput'),
-  intervalInput: document.getElementById('intervalInput'),
-  runCycleButton: document.getElementById('runCycleButton'),
-  startTickerButton: document.getElementById('startTickerButton'),
-  stopTickerButton: document.getElementById('stopTickerButton'),
-  drawerButton: document.getElementById('drawerButton'),
-  closeDrawerButton: document.getElementById('closeDrawerButton'),
-  drawer: document.getElementById('systemDrawer'),
-  drawerBackdrop: document.getElementById('drawerBackdrop'),
-  matchesFound: document.getElementById('matchesFound'),
-  matchesScanned: document.getElementById('matchesScanned'),
-  rowCount: document.getElementById('rowCount'),
-  availableCount: document.getElementById('availableCount'),
-  alertCount: document.getElementById('alertCount'),
-  lastUpdated: document.getElementById('lastUpdated'),
-  alertPanel: document.getElementById('alertPanel'),
-  gameBoard: document.getElementById('gameBoard'),
-  availabilityFilter: document.getElementById('availabilityFilter'),
-  ticketDetail: document.getElementById('ticketDetail'),
-  ticketBackdrop: document.getElementById('ticketBackdrop'),
-  detailTitle: document.getElementById('detailTitle'),
-  detailBody: document.getElementById('detailBody'),
-  closeDetailButton: document.getElementById('closeDetailButton'),
-  cycleOutput: document.getElementById('cycleOutput'),
-  eventLog: document.getElementById('eventLog'),
-  jobBoard: document.getElementById('jobBoard'),
-};
-
-function requestBody() {
-  return {
-    visitorCountry: els.countryInput.value || 'Mexico',
-    matchConcurrency: Number(els.concurrencyInput.value || 1),
-    intervalMs: Number(els.intervalInput.value || 60000),
-  };
-}
-
-async function postJson(path, body = {}) {
-  const response = await fetch(path, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-
-  if (!response.ok && response.status !== 202) {
-    const payload = await response.json().catch(() => ({}));
-    throw new Error(payload.error || `Request failed: ${response.status}`);
-  }
-}
-
 function zoneColor(row) {
   const title = row.packageTitle || row.loungeId || '';
   for (const [zone, color] of Object.entries(ZONE_COLORS)) {
-    if (title.toLowerCase().includes(zone.toLowerCase())) {
-      return color;
-    }
+    if (title.toLowerCase().includes(zone.toLowerCase())) return color;
   }
-
   if (/champion/i.test(title)) return ZONE_COLORS['Champions Club'];
   if (/vip/i.test(title)) return ZONE_COLORS['VIP'];
   if (/pitchside/i.test(title)) return ZONE_COLORS['Pitchside Lounge'];
   if (/trophy/i.test(title)) return ZONE_COLORS['Trophy Lounge'];
   if (/pavilion|fifa\s*p/i.test(title)) return ZONE_COLORS['FIFA Pavilion'];
-
   return '#9a9688';
 }
 
 function zoneName(row) {
   const title = row.packageTitle || '';
   for (const zone of Object.keys(ZONE_COLORS)) {
-    if (title.toLowerCase().includes(zone.toLowerCase())) {
-      return zone;
-    }
+    if (title.toLowerCase().includes(zone.toLowerCase())) return zone;
   }
-
   if (/champion/i.test(title)) return 'Champions Club';
   if (/vip/i.test(title)) return 'VIP';
   if (/pitchside/i.test(title)) return 'Pitchside Lounge';
   if (/trophy/i.test(title)) return 'Trophy Lounge';
   if (/pavilion/i.test(title)) return 'FIFA Pavilion';
-
   return title || row.loungeId || 'Boleto';
 }
 
@@ -124,11 +49,141 @@ function availColor(quantity) {
   return '#56544d';
 }
 
-function describeEvent(event) {
-  if (!event) {
-    return 'Esperando inicio';
-  }
+function money(value) {
+  if (value === null || value === undefined) return '-';
+  return new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN', maximumFractionDigits: 0 }).format(value);
+}
 
+function ticketKey(row) {
+  return [row.matchCode, row.performanceId, row.loungeId, row.seatingCode, row.priceMxn].join('|');
+}
+
+function timeAgo(timestamp, now) {
+  if (!timestamp) return 'Sin datos';
+  const seconds = Math.max(0, Math.floor(((now || Date.now()) - new Date(timestamp).getTime()) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, '0')}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+
+function parseMatchMetadataFromText(text) {
+  const clean = String(text || '').replace(/\s+/g, ' ').trim();
+  const dateMatch = clean.match(/\b(?:June|July)\s+\d{1,2}\s+(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+[\d:]+\s*(?:am|pm)\s*[A-Z]{2}\b/i);
+  const locationText = dateMatch
+    ? clean.slice(dateMatch.index + dateMatch[0].length).split(/\b(?:Starting at|Currently unavailable|Must be purchased)\b/i)[0].trim()
+    : '';
+  const locationMatch = locationText.match(/^(.+?),\s*(Mexico|United States|Canada)\s+(.+)$/i);
+  return {
+    matchDate: dateMatch?.[0] || null,
+    city: locationMatch?.[1]?.trim() || null,
+    country: locationMatch?.[2]?.trim() || null,
+    venue: locationMatch?.[3]?.trim() || null,
+  };
+}
+
+function matchSourceForRow(row, cycle) {
+  return (cycle?.matches || []).find((m) => (
+    m.target?.performanceId === row.performanceId
+    || m.availability?.performanceId === row.performanceId
+    || m.card?.matchCode === row.matchCode
+  ));
+}
+
+function matchInfo(row, cycle) {
+  const source = matchSourceForRow(row, cycle);
+  const parsed = parseMatchMetadataFromText(source?.target?.sourceCardText || source?.card?.text);
+  return {
+    matchCode: row.matchCode || source?.target?.matchCode || source?.card?.matchCode || 'N/A',
+    teams: row.teams || source?.target?.teams || source?.availability?.teams || 'Partido por confirmar',
+    venue: row.venue || source?.target?.venue || source?.availability?.venue || parsed.venue,
+    city: row.city || source?.target?.city || source?.availability?.city || parsed.city,
+    country: row.country || source?.target?.country || source?.availability?.country || parsed.country,
+    matchDate: row.matchDate || source?.target?.matchDate || source?.availability?.matchDate || parsed.matchDate,
+  };
+}
+
+function matchLocation(row, cycle) {
+  const info = matchInfo(row, cycle);
+  return [info.city, info.country, info.venue, info.matchDate].filter(Boolean).join(' · ') || 'Sede pendiente';
+}
+
+function alertRetentionMs(cycle) {
+  return Number(cycle?.alertRetentionMs || cycle?.state?.alertRetentionMs || DEFAULT_ALERT_RETENTION_MS);
+}
+
+function alertTimestamp(row) {
+  if (row?.lastAlertAt) return row.lastAlertAt;
+  if (row?.availabilityFreshness === 'new') return row.becameAvailableAt || row.lastChangedAt || row.checkedAt || null;
+  if (row?.availabilityFreshness === 'increased') return row.lastChangedAt || row.checkedAt || null;
+  return null;
+}
+
+function alertReason(row) {
+  if (['new', 'increased'].includes(row?.alertReason)) return row.alertReason;
+  if (['new', 'increased'].includes(row?.availabilityFreshness)) return row.availabilityFreshness;
+  return null;
+}
+
+function isActiveAlert(row, cycle, now) {
+  if (!row?.available || !alertReason(row)) return false;
+  const ts = alertTimestamp(row);
+  return ts && (now || Date.now()) - new Date(ts).getTime() <= alertRetentionMs(cycle);
+}
+
+function activeAlerts(cycle, now) {
+  return (cycle?.alerts || [])
+    .filter((row) => isActiveAlert(row, cycle, now))
+    .sort((a, b) => new Date(alertTimestamp(b)).getTime() - new Date(alertTimestamp(a)).getTime());
+}
+
+function freshnessInfo(row, cycle, now) {
+  if (!row.available) {
+    return { text: row.checkedAt ? `Revisado ${timeAgo(row.checkedAt, now)}` : 'No disponible', type: 'none' };
+  }
+  if (isActiveAlert(row, cycle, now)) {
+    const label = alertReason(row) === 'increased' ? 'Más stock' : 'Nuevo';
+    return { text: `${label} hace ${timeAgo(alertTimestamp(row), now)}`, type: 'new' };
+  }
+  return { text: row.checkedAt ? `Revisado · ${timeAgo(row.checkedAt, now)}` : 'Disponible', type: 'rev' };
+}
+
+function expandPathToken(token) {
+  if (/^W\d+$/i.test(token)) return `Ganador ${token.toUpperCase().replace('W', 'M')}`;
+  if (/^L\d+$/i.test(token)) return `Perdedor ${token.toUpperCase().replace('L', 'M')}`;
+  const groupSeed = token.match(/^([123])([A-Z]+)$/i);
+  if (!groupSeed) return token;
+  const place = { 1: '1o', 2: '2o', 3: '3o' }[groupSeed[1]];
+  return `${place} Grupo ${groupSeed[2].toUpperCase().split('').join('/')}`;
+}
+
+function possibleRivalsText(teams) {
+  if (!teams || !/(?:^|\s)(?:[123][A-Z]{1,6}|W\d+|L\d+)(?:\s|$)/i.test(teams)) return '';
+  return teams.split(/\s+vs\s+/i).map((p) => expandPathToken(p.trim())).join(' vs ');
+}
+
+function groupRowsByMatch(rows, cycle) {
+  const groups = new Map();
+  for (const row of rows) {
+    const key = row.matchCode || row.performanceId || 'sin-partido';
+    if (!groups.has(key)) {
+      const info = matchInfo(row, cycle);
+      groups.set(key, { ...info, performanceId: row.performanceId, rows: [] });
+    }
+    groups.get(key).rows.push(row);
+  }
+  return [...groups.values()].sort((a, b) => a.matchCode.localeCompare(b.matchCode, undefined, { numeric: true }));
+}
+
+function ticketSort(a, b) {
+  if (a.available !== b.available) return a.available ? -1 : 1;
+  if (Number(a.availableQuantity || 0) !== Number(b.availableQuantity || 0)) return Number(b.availableQuantity || 0) - Number(a.availableQuantity || 0);
+  return Number(a.priceMxn || 0) - Number(b.priceMxn || 0);
+}
+
+function describeEvent(event) {
+  if (!event) return 'Esperando inicio';
   const labels = {
     connected: 'Dashboard conectado',
     dashboard_ticker_started: `Ticker iniciado cada ${event.intervalMs || ''} ms`,
@@ -178,901 +233,342 @@ function describeEvent(event) {
     match_job_result: `Resultado ${event.matchCode || ''}: ${event.rows || 0} filas, ${event.availableRows || 0} disponibles`,
     cycle_completed: `Ciclo completo: ${event.matchCardsScanned || 0} partidos, ${event.failedMatchCount || 0} fallos`,
   };
-
   return labels[event.event] || event.event || 'Evento';
 }
 
-function setStatus(job) {
-  els.statusPill.className = 'status-pill idle';
-  els.statusText.textContent = 'En espera';
-  els.startTickerButton.hidden = !state.isAdmin || Boolean(job?.tickerRunning);
-  els.stopTickerButton.hidden = !state.isAdmin || !job?.tickerRunning;
-  els.runCycleButton.disabled = Boolean(job?.running);
-  els.startTickerButton.disabled = Boolean(job?.running);
-
-  if (job?.lastError) {
-    els.statusPill.className = 'status-pill error';
-    els.statusText.textContent = 'Error';
-  } else if (job?.running) {
-    els.statusPill.className = 'status-pill live';
-    els.statusText.textContent = describeEvent(job?.lastEvent) || 'Ejecutando';
-  } else if (job?.tickerRunning) {
-    els.statusPill.className = 'status-pill live';
-    const country = state.latestCycle?.visitorCountry || els.countryInput.value || 'México';
-    els.statusText.textContent = `En vivo · ${country}`;
-  }
-}
-
-function money(value) {
-  if (value === null || value === undefined) {
-    return '-';
-  }
-
-  return new Intl.NumberFormat('es-MX', {
-    style: 'currency',
-    currency: 'MXN',
-    maximumFractionDigits: 0,
-  }).format(value);
-}
-
-function ticketKey(row) {
-  return [
-    row.matchCode,
-    row.performanceId,
-    row.loungeId,
-    row.seatingCode,
-    row.priceMxn,
-  ].join('|');
-}
-
-function syncSelectedRow() {
-  if (!state.selectedKey) {
-    state.selectedRow = null;
-    return;
-  }
-
-  const currentRows = rowsForDisplay();
-  state.selectedRow = currentRows.find((row) => ticketKey(row) === state.selectedKey) || null;
-
-  if (!state.selectedRow) {
-    state.selectedKey = null;
-  }
-}
-
-function timeAgo(timestamp) {
-  if (!timestamp) {
-    return 'Sin datos';
-  }
-
-  const seconds = Math.max(0, Math.floor((Date.now() - new Date(timestamp).getTime()) / 1000));
-
-  if (seconds < 60) {
-    return `${seconds}s`;
-  }
-
-  const minutes = Math.floor(seconds / 60);
-
-  if (minutes < 60) {
-    return `${minutes}m ${String(seconds % 60).padStart(2, '0')}s`;
-  }
-
-  const hours = Math.floor(minutes / 60);
-  return `${hours}h ${minutes % 60}m`;
-}
-
-function parseMatchMetadataFromText(text) {
-  const clean = String(text || '').replace(/\s+/g, ' ').trim();
-  const dateMatch = clean.match(/\b(?:June|July)\s+\d{1,2}\s+(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+[\d:]+\s*(?:am|pm)\s*[A-Z]{2}\b/i);
-  const locationText = dateMatch
-    ? clean.slice(dateMatch.index + dateMatch[0].length).split(/\b(?:Starting at|Currently unavailable|Must be purchased)\b/i)[0].trim()
-    : '';
-  const locationMatch = locationText.match(/^(.+?),\s*(Mexico|United States|Canada)\s+(.+)$/i);
-
-  return {
-    matchDate: dateMatch?.[0] || null,
-    city: locationMatch?.[1]?.trim() || null,
-    country: locationMatch?.[2]?.trim() || null,
-    venue: locationMatch?.[3]?.trim() || null,
-  };
-}
-
-function matchSourceForRow(row) {
-  return (state.latestCycle?.matches || []).find((match) => (
-    match.target?.performanceId === row.performanceId
-      || match.availability?.performanceId === row.performanceId
-      || match.card?.matchCode === row.matchCode
-  ));
-}
-
-function matchInfo(row) {
-  const source = matchSourceForRow(row);
-  const parsed = parseMatchMetadataFromText(source?.target?.sourceCardText || source?.card?.text);
-
-  return {
-    matchCode: row.matchCode || source?.target?.matchCode || source?.card?.matchCode || 'N/A',
-    teams: row.teams || source?.target?.teams || source?.availability?.teams || 'Partido por confirmar',
-    venue: row.venue || source?.target?.venue || source?.availability?.venue || parsed.venue,
-    city: row.city || source?.target?.city || source?.availability?.city || parsed.city,
-    country: row.country || source?.target?.country || source?.availability?.country || parsed.country,
-    matchDate: row.matchDate || source?.target?.matchDate || source?.availability?.matchDate || parsed.matchDate,
-  };
-}
-
-function matchTitle(row) {
-  return matchInfo(row).teams || 'Partido por confirmar';
-}
-
-function matchLocation(row) {
-  const info = matchInfo(row);
-  const location = [info.city, info.country, info.venue, info.matchDate].filter(Boolean).join(' · ');
-  return location || 'Sede pendiente';
-}
-
-function alertRetentionMs(cycle = state.latestCycle) {
-  return Number(cycle?.alertRetentionMs || cycle?.state?.alertRetentionMs || DEFAULT_ALERT_RETENTION_MS);
-}
-
-function alertTimestamp(row) {
-  if (row?.lastAlertAt) {
-    return row.lastAlertAt;
-  }
-
-  if (row?.availabilityFreshness === 'new') {
-    return row.becameAvailableAt || row.lastChangedAt || row.checkedAt || null;
-  }
-
-  if (row?.availabilityFreshness === 'increased') {
-    return row.lastChangedAt || row.checkedAt || null;
-  }
-
-  return null;
-}
-
-function alertReason(row) {
-  if (['new', 'increased'].includes(row?.alertReason)) {
-    return row.alertReason;
-  }
-
-  if (['new', 'increased'].includes(row?.availabilityFreshness)) {
-    return row.availabilityFreshness;
-  }
-
-  return null;
-}
-
-function isActiveAlert(row, cycle = state.latestCycle) {
-  if (!row?.available || !alertReason(row)) {
-    return false;
-  }
-
-  const timestamp = alertTimestamp(row);
-  return timestamp && Date.now() - new Date(timestamp).getTime() <= alertRetentionMs(cycle);
-}
-
-function activeAlerts(cycle) {
-  return (cycle?.alerts || [])
-    .filter((row) => isActiveAlert(row, cycle))
-    .sort((a, b) => new Date(alertTimestamp(b)).getTime() - new Date(alertTimestamp(a)).getTime());
-}
-
-function availabilityFreshness(row) {
-  if (!row.available) {
-    return { text: row.checkedAt ? `Revisado ${timeAgo(row.checkedAt)}` : 'No disponible', type: 'none' };
-  }
-
-  if (isActiveAlert(row)) {
-    const label = alertReason(row) === 'increased' ? 'Más stock' : 'Nuevo';
-    return { text: `${label} · ${timeAgo(alertTimestamp(row))}`, type: 'new' };
-  }
-
-  return { text: row.checkedAt ? `Revisado · ${timeAgo(row.checkedAt)}` : 'Disponible', type: 'rev' };
-}
-
-function expandPathToken(token) {
-  if (/^W\d+$/i.test(token)) {
-    return `Ganador ${token.toUpperCase().replace('W', 'M')}`;
-  }
-
-  if (/^L\d+$/i.test(token)) {
-    return `Perdedor ${token.toUpperCase().replace('L', 'M')}`;
-  }
-
-  const groupSeed = token.match(/^([123])([A-Z]+)$/i);
-
-  if (!groupSeed) {
-    return token;
-  }
-
-  const place = { 1: '1o', 2: '2o', 3: '3o' }[groupSeed[1]];
-  return `${place} Grupo ${groupSeed[2].toUpperCase().split('').join('/')}`;
-}
-
-function possibleRivalsText(teams) {
-  if (!teams || !/(?:^|\s)(?:[123][A-Z]{1,6}|W\d+|L\d+)(?:\s|$)/i.test(teams)) {
-    return '';
-  }
-
-  return teams
-    .split(/\s+vs\s+/i)
-    .map((part) => expandPathToken(part.trim()))
-    .join(' vs ');
-}
-
-function rowsForDisplay() {
-  const rows = state.latestCycle?.rows || [];
-  const filter = state.filter;
-
-  return rows.filter((row) => {
-    if (filter === 'available') {
-      return row.available;
-    }
-
-    if (filter === 'unavailable') {
-      return !row.available;
-    }
-
-    return true;
-  });
-}
-
-function groupRowsByMatch(rows) {
-  const groups = new Map();
-
-  for (const row of rows) {
-    const key = row.matchCode || row.performanceId || 'sin-partido';
-
-    if (!groups.has(key)) {
-      const info = matchInfo(row);
-      groups.set(key, {
-        matchCode: info.matchCode,
-        teams: info.teams,
-        venue: info.venue,
-        city: info.city,
-        country: info.country,
-        matchDate: info.matchDate,
-        performanceId: row.performanceId,
-        rows: [],
-      });
-    }
-
-    groups.get(key).rows.push(row);
-  }
-
-  return [...groups.values()].sort((a, b) => a.matchCode.localeCompare(b.matchCode, undefined, { numeric: true }));
-}
-
-function ticketSort(a, b) {
-  if (a.available !== b.available) {
-    return a.available ? -1 : 1;
-  }
-
-  if (Number(a.availableQuantity || 0) !== Number(b.availableQuantity || 0)) {
-    return Number(b.availableQuantity || 0) - Number(a.availableQuantity || 0);
-  }
-
-  return Number(a.priceMxn || 0) - Number(b.priceMxn || 0);
-}
-
-function renderMetrics(cycle) {
-  const alerts = activeAlerts(cycle);
-  els.matchesFound.textContent = cycle?.matchCardsFound ?? 0;
-  els.matchesScanned.textContent = cycle?.matchCardsScanned ?? 0;
-  els.rowCount.textContent = cycle?.rowCount ?? 0;
-  els.availableCount.textContent = cycle?.availableRowCount ?? 0;
-  els.alertCount.textContent = alerts.length;
-  els.lastUpdated.textContent = cycle?.cycleCompletedAt
-    ? new Date(cycle.cycleCompletedAt).toLocaleString()
-    : 'Sin ciclos aún';
-  els.freshnessText.textContent = timeAgo(cycle?.cycleCompletedAt);
-  els.shopContextLabel.textContent = cycle?.visitorCountry || els.countryInput.value || 'Mexico';
-}
-
-function renderAlerts(cycle) {
-  const alerts = activeAlerts(cycle);
-
-  if (alerts.length === 0) {
-    els.alertPanel.hidden = true;
-    els.alertPanel.innerHTML = '';
-    return;
-  }
-
-  els.alertPanel.hidden = false;
-
-  const retMin = Math.round(alertRetentionMs(cycle) / 60000);
-  els.alertPanel.innerHTML = `
-    <div class="alert-summary alert-summary-desktop">
-      <div class="alert-summary-count">
-        <span style="width:9px;height:9px;border-radius:50%;background:#c8820a;flex:none"></span>
-        <strong>${alerts.length}</strong>
-        <span>ALERTAS<br>NUEVAS</span>
-      </div>
-      <p>Boletos que aparecieron o subieron stock en los últimos ${retMin} minutos.</p>
-    </div>
-    <div class="alert-summary-mobile">
-      <span style="width:7px;height:7px;border-radius:50%;background:#c8820a;flex:none"></span>
-      <span class="alert-mobile-count">${alerts.length} alertas nuevas</span>
-      <span class="alert-mobile-sub">aparecieron o subieron stock</span>
-    </div>
-    <div class="alert-grid"></div>
-  `;
-
-  const grid = els.alertPanel.querySelector('.alert-grid');
-
-  for (const row of alerts.slice(0, 8)) {
-    const color = zoneColor(row);
-    const zone = zoneName(row);
-    const teams = matchTitle(row);
-    const sub = zone + (row.seatingName ? ` · ${row.seatingName}` : '');
-    const qty = Number(row.availableQuantity || 0);
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'alert-card';
-    button.innerHTML = `
-      <div class="alert-card-head">
-        <span class="zone-dot" style="background:${color}"></span>
-        <span class="alert-card-code">${row.matchCode || 'N/A'}</span>
-        <span class="alert-card-zone">${teams}</span>
-      </div>
-      <div class="alert-card-sub">${sub}</div>
-      <div class="alert-card-foot">
-        <span class="alert-card-price">${money(row.priceMxn)}</span>
-        <span class="alert-card-avail" style="color:${availColor(qty)}">${qty} disp.</span>
-      </div>
-    `;
-    button.addEventListener('click', () => {
-      state.selectedKey = ticketKey(row);
-      state.selectedRow = row;
-      state.drawerType = 'ticket';
-      renderTicketDetail();
-      renderGameBoard();
-    });
-    grid.appendChild(button);
-  }
-}
-
-function renderGameBoard() {
-  const rows = rowsForDisplay();
-  const matches = groupRowsByMatch(rows);
-  els.gameBoard.innerHTML = '';
-
-  if (matches.length === 0) {
-    const empty = document.createElement('section');
-    empty.className = 'empty-state';
-    empty.innerHTML = `
-      <h2>No hay boletos para mostrar</h2>
-      <p>El último ciclo no encontró boletos con el filtro actual. Cambia el filtro o espera el siguiente ciclo.</p>
-    `;
-    els.gameBoard.appendChild(empty);
-    return;
-  }
-
-  const allRows = state.latestCycle?.rows || [];
-
-  for (const match of matches) {
-    const matchAllRows = allRows.filter((r) => r.matchCode === match.matchCode);
-    const availableInMatch = matchAllRows.filter((r) => r.available).length;
-    const totalInMatch = matchAllRows.length;
-    const totalQuantity = match.rows.reduce((sum, r) => sum + Number(r.availableQuantity || 0), 0);
-    const meta = matchLocation({ matchCode: match.matchCode, ...match });
-    const possibleRivals = possibleRivalsText(match.teams);
-
-    const card = document.createElement('article');
-    card.className = 'match-card';
-    card.innerHTML = `
-      <div class="match-head">
-        <div class="match-head-left">
-          <span class="match-pill">${match.matchCode}</span>
-          <div style="min-width:0">
-            <div class="match-title">${match.teams}</div>
-            <div class="match-meta">${meta}${possibleRivals ? ` · ${possibleRivals}` : ''}</div>
-          </div>
-        </div>
-        <div class="match-head-right">
-          <button type="button" class="match-info-link" data-match-info="${match.matchCode}">Info →</button>
-          <span class="match-avail-badge">${availableInMatch}/${totalInMatch} disp.</span>
-          <div class="match-detected">
-            <strong>${totalQuantity.toLocaleString('en-US')}</strong>
-            <small>DETECTADOS</small>
-          </div>
-        </div>
-      </div>
-    `;
-
-    if (match.rows.length === 0) {
-      const emptyDiv = document.createElement('div');
-      emptyDiv.className = 'match-empty';
-      emptyDiv.textContent = 'Sin boletos en este filtro.';
-      card.appendChild(emptyDiv);
-    } else {
-      const grid = document.createElement('div');
-      grid.className = 'ticket-grid';
-
-      for (const row of [...match.rows].sort(ticketSort)) {
-        const key = ticketKey(row);
-        const color = zoneColor(row);
-        const zone = zoneName(row);
-        const sub = row.seatingName || row.seatingCode || 'Configuración';
-        const qty = Number(row.availableQuantity || 0);
-        const freshness = availabilityFreshness(row);
-
-        let freshnessHtml = '';
-        if (freshness.type === 'new') {
-          freshnessHtml = `<span class="fresh-tag-new"><span style="width:6px;height:6px;border-radius:50%;background:#c8820a;flex:none"></span>${freshness.text}</span>`;
-        } else if (freshness.type === 'rev') {
-          freshnessHtml = `<span class="fresh-tag-rev">${freshness.text}</span>`;
-        } else {
-          freshnessHtml = `<span class="fresh-tag-none">${freshness.text}</span>`;
-        }
-
-        const button = document.createElement('div');
-        button.role = 'button';
-        button.tabIndex = 0;
-        button.className = `ticket-cell${row.available ? '' : ' unavailable'}${state.selectedKey === key ? ' selected' : ''}`;
-        button.innerHTML = `
-          <span class="zone-dot" style="background:${color}"></span>
-          <div class="ticket-info">
-            <span class="ticket-zone">${zone}</span>
-            <span class="ticket-sub">${sub}</span>
-            <span class="ticket-freshness">${freshnessHtml}</span>
-          </div>
-          <div class="ticket-nums">
-            <span class="ticket-price">${money(row.priceMxn)}</span>
-            <span class="ticket-avail" style="color:${availColor(qty)}">${row.available ? `${qty} disp.` : 'No disponible'}</span>
-          </div>
-        `;
-        button.addEventListener('click', () => {
-          state.selectedRow = row;
-          state.selectedKey = key;
-          state.drawerType = 'ticket';
-          renderTicketDetail();
-          renderGameBoard();
-        });
-        grid.appendChild(button);
-      }
-
-      card.appendChild(grid);
-    }
-
-    card.querySelector('[data-match-info]')?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      state.drawerType = 'match';
-      state.drawerMatchCode = match.matchCode;
-      state.selectedRow = null;
-      state.selectedKey = null;
-      renderTicketDetail();
-    });
-
-    els.gameBoard.appendChild(card);
-  }
-}
-
-function renderTicketDetail() {
-  if (state.drawerType === 'match' && state.drawerMatchCode) {
-    renderMatchDetail();
-    return;
-  }
-
-  const row = state.selectedRow;
-
-  if (!row) {
-    els.ticketDetail.hidden = true;
-    els.ticketDetail.classList.remove('open');
-    els.ticketDetail.setAttribute('aria-hidden', 'true');
-    els.ticketBackdrop.hidden = true;
-    els.detailBody.innerHTML = '';
-    state.drawerType = null;
-    return;
-  }
-
-  const info = matchInfo(row);
-  const color = zoneColor(row);
-  const zone = zoneName(row);
-  const sub = row.seatingName || row.seatingCode || 'Configuración';
-  const qty = Number(row.availableQuantity || 0);
-  const freshness = availabilityFreshness(row);
-  const buyUrl = row.fifaShopUrl || state.latestCycle?.shopUrl || '#';
-
-  let statusLabel, statusColor, statusBg;
-  if (freshness.type === 'new') {
-    statusLabel = alertReason(row) === 'increased' ? 'Más stock' : 'Nuevo';
-    statusColor = '#56544d';
-    statusBg = '#f1efe8';
-  } else if (!row.available) {
-    statusLabel = 'No disponible';
-    statusColor = '#9a9688';
-    statusBg = '#f1efe8';
-  } else {
-    statusLabel = 'Revisado';
-    statusColor = '#56544d';
-    statusBg = '#f3f1ea';
-  }
-
-  const details = Array.isArray(row.rawTicketType?.details) ? row.rawTicketType.details : [];
-  const desc = row.rawTicketType?.description || ZONE_DESCRIPTIONS[zone] || '';
-
-  const fields = [
-    { k: 'Asiento', v: sub },
-    { k: 'Código de asiento', v: row.seatingCode },
-    { k: 'Tipo', v: zone },
-    { k: 'Clase', v: row.packageClass || row.packageShortTitle || '' },
-    { k: 'Precio base', v: `Desde ${money(row.priceMxn)} MXN / persona` },
-    { k: 'Performance ID', v: row.performanceId },
-    { k: 'SeatCategory ID', v: row.rawSeatingSection?.SeatCategoryId },
-    { k: 'AudienceSub ID', v: row.rawSeatingSection?.AudienceSubCategoryId },
-  ].filter((f) => f.v);
-
-  const benefitsHtml = details.length > 0
-    ? details.map((d) => `
-        <div class="detail-include-item">
-          <span class="detail-include-dot" style="background:${color}"></span>
-          <div class="detail-include-text"><b>${d.title || 'Detalle'}:</b> ${d.content || ''}</div>
-        </div>
-      `).join('')
-    : '';
-
-  els.detailTitle.textContent = 'DETALLE DEL BOLETO';
-  els.ticketDetail.hidden = false;
-  els.ticketDetail.classList.add('open');
-  els.ticketDetail.setAttribute('aria-hidden', 'false');
-  els.ticketBackdrop.hidden = false;
-
-  els.detailBody.innerHTML = `
-    <div class="detail-top">
-      <div class="detail-top-left">
-        <div class="detail-match-ref">${info.matchCode} · ${info.teams}</div>
-        <div class="detail-zone-row">
-          <span class="detail-zone-dot" style="background:${color}"></span>
-          <span class="detail-zone-name">${zone}</span>
-        </div>
-        <div class="detail-sub">${sub}</div>
-      </div>
-      <div class="detail-top-right">
-        <div class="detail-price">${money(row.priceMxn)}</div>
-        <div class="detail-avail" style="color:${availColor(qty)}">${row.available ? `${qty} disponibles` : 'No disponible'}</div>
-      </div>
-    </div>
-    <div class="detail-status-row">
-      <span class="detail-status-badge" style="color:${statusColor};background:${statusBg}">${statusLabel}</span>
-      <span class="detail-status-time">visto hace ${timeAgo(row.checkedAt)}</span>
-    </div>
-    <a class="btn-cta" href="${buyUrl}" target="_blank" rel="noreferrer" style="margin-top:16px">ABRIR EN FIFA →</a>
-    <div class="detail-field-grid">
-      ${fields.map((f) => `
-        <div class="detail-field">
-          <div class="detail-field-label">${f.k}</div>
-          <div class="detail-field-value">${f.v}</div>
-        </div>
-      `).join('')}
-    </div>
-    ${desc ? `<div class="detail-desc">${desc}</div>` : ''}
-    ${benefitsHtml ? `
-      <div class="detail-includes">
-        <div class="detail-includes-title">INCLUYE</div>
-        ${benefitsHtml}
-      </div>
-    ` : ''}
-  `;
-}
-
-function renderMatchDetail() {
-  const matchCode = state.drawerMatchCode;
-  const allRows = state.latestCycle?.rows || [];
-  const matchRows = allRows.filter((r) => r.matchCode === matchCode);
-
-  if (matchRows.length === 0) {
-    closeDetail();
-    return;
-  }
-
-  const info = matchInfo(matchRows[0]);
-  const meta = matchLocation(matchRows[0]);
-  const availableRows = matchRows.filter((r) => r.available);
-  const totalQty = matchRows.reduce((sum, r) => sum + Number(r.availableQuantity || 0), 0);
-
-  const zoneMap = {};
-  for (const row of availableRows) {
-    const zone = zoneName(row);
-    const color = zoneColor(row);
-    const price = Number(row.priceMxn || 0);
-    const qty = Number(row.availableQuantity || 0);
-    if (!zoneMap[zone]) {
-      zoneMap[zone] = { name: zone, color, count: 0, min: Infinity };
-    }
-    zoneMap[zone].count += qty;
-    zoneMap[zone].min = Math.min(zoneMap[zone].min, price);
-  }
-  const zones = Object.values(zoneMap);
-
-  els.detailTitle.textContent = 'INFORMACIÓN DEL PARTIDO';
-  els.ticketDetail.hidden = false;
-  els.ticketDetail.classList.add('open');
-  els.ticketDetail.setAttribute('aria-hidden', 'false');
-  els.ticketBackdrop.hidden = false;
-
-  els.detailBody.innerHTML = `
-    <div class="detail-match-ref">${info.matchCode}</div>
-    <div class="detail-match-title">${info.teams}</div>
-    <div class="detail-match-meta">${meta}</div>
-    <div class="detail-match-stats">
-      <div class="detail-match-stat">
-        <div class="label-mono">BOLETOS DETECTADOS</div>
-        <div class="detail-match-stat-value">${totalQty.toLocaleString('en-US')}</div>
-      </div>
-      <div class="detail-match-stat">
-        <div class="label-mono">TIPOS DISPONIBLES</div>
-        <div class="detail-match-stat-value" style="color:var(--green)">${availableRows.length} / ${matchRows.length}</div>
-      </div>
-    </div>
-    ${zones.length > 0 ? `
-      <div class="detail-includes-title" style="margin-top:20px">DISPONIBLE POR ZONA</div>
-      <div class="detail-zone-list">
-        ${zones.map((z) => `
-          <div class="detail-zone-item">
-            <span class="detail-zone-item-dot" style="background:${z.color}"></span>
-            <span class="detail-zone-item-name">${z.name}</span>
-            <span class="detail-zone-item-from">desde ${money(z.min)}</span>
-            <span class="detail-zone-item-count">${z.count}</span>
-          </div>
-        `).join('')}
-      </div>
-    ` : ''}
-  `;
-}
-
-function closeDetail() {
-  state.selectedRow = null;
-  state.selectedKey = null;
-  state.drawerType = null;
-  state.drawerMatchCode = null;
-  renderTicketDetail();
-  renderGameBoard();
-}
-
-function renderEvents() {
-  els.eventLog.innerHTML = '';
-
-  for (const event of state.events.slice(0, 120)) {
-    const li = document.createElement('li');
-    li.innerHTML = `
-      <time>${new Date(event.emittedAt || Date.now()).toLocaleTimeString()}</time>
-      <strong>${describeEvent(event)}</strong>
-      ${event.error ? `<span class="event-error">${event.error}</span>` : ''}
-    `;
-    els.eventLog.appendChild(li);
-  }
-}
-
-function renderJobBoard() {
+function computeJobs(events, job, cycle) {
   const jobs = new Map();
-  const currentCycleStartIndex = state.events.findIndex((event) => (
-    event.event === 'cycle_started' || event.event === 'dashboard_cycle_started'
-  ));
-  const cycleEvents = state.job?.running && currentCycleStartIndex >= 0
-    ? state.events.slice(0, currentCycleStartIndex + 1)
-    : state.events;
+  const startIdx = events.findIndex((e) => e.event === 'cycle_started' || e.event === 'dashboard_cycle_started');
+  const cycleEvents = job?.running && startIdx >= 0 ? events.slice(0, startIdx + 1) : events;
 
-  if (!state.job?.running) {
-    for (const match of state.latestCycle?.matches || []) {
-      const matchCode = match.card?.matchCode || match.availability?.matchCode || 'N/A';
-      jobs.set(matchCode, {
-        matchCode,
+  if (!job?.running) {
+    for (const match of cycle?.matches || []) {
+      const mc = match.card?.matchCode || match.availability?.matchCode || 'N/A';
+      jobs.set(mc, {
+        matchCode: mc,
         status: match.ok ? 'Terminado' : 'Error',
         rows: match.availability?.rowCount ?? 0,
         availableRows: match.availability?.availableRows?.length ?? 0,
         error: match.error || '',
-        updatedAt: match.checkedAt,
       });
     }
   }
 
   for (const event of [...cycleEvents].reverse()) {
-    if (!event.matchCode) {
-      continue;
-    }
-
-    const current = jobs.get(event.matchCode) || {
-      matchCode: event.matchCode,
-      rows: null,
-      availableRows: null,
-      error: '',
-    };
-
-    if (event.event === 'match_job_queued') {
-      current.status = `En cola ${event.index || ''}/${event.total || ''}`.trim();
-    }
-
-    if (event.event === 'match_job_started') {
-      current.status = 'Ejecutando';
-    }
-
-    if (event.event === 'match_card_click_started') {
-      current.status = 'Abriendo partido';
-    }
-
-    if (event.event === 'lounge_json_wait_started') {
-      current.status = 'Esperando boletos';
-    }
-
-    if (event.event === 'lounge_json_captured') {
-      current.status = 'JSON capturado';
-      current.bodyBytes = event.bodyBytes;
-    }
-
+    if (!event.matchCode) continue;
+    const cur = jobs.get(event.matchCode) || { matchCode: event.matchCode, rows: null, availableRows: null, error: '' };
+    if (event.event === 'match_job_queued') cur.status = `En cola ${event.index || ''}/${event.total || ''}`.trim();
+    if (event.event === 'match_job_started') cur.status = 'Ejecutando';
+    if (event.event === 'match_card_click_started') cur.status = 'Abriendo partido';
+    if (event.event === 'lounge_json_wait_started') cur.status = 'Esperando boletos';
+    if (event.event === 'lounge_json_captured') { cur.status = 'JSON capturado'; cur.bodyBytes = event.bodyBytes; }
     if (event.event === 'match_job_result') {
-      current.status = event.ok ? 'Terminado' : 'Error';
-      current.rows = event.rows ?? current.rows;
-      current.availableRows = event.availableRows ?? current.availableRows;
-      current.error = event.error || current.error || '';
+      cur.status = event.ok ? 'Terminado' : 'Error';
+      cur.rows = event.rows ?? cur.rows;
+      cur.availableRows = event.availableRows ?? cur.availableRows;
+      cur.error = event.error || cur.error || '';
     }
-
-    if (event.event === 'match_job_finished' && !['Terminado', 'Error'].includes(current.status)) {
-      current.status = 'Cerrado';
-    }
-
-    current.updatedAt = event.emittedAt || current.updatedAt;
-    jobs.set(event.matchCode, current);
+    if (event.event === 'match_job_finished' && !['Terminado', 'Error'].includes(cur.status)) cur.status = 'Cerrado';
+    jobs.set(event.matchCode, cur);
   }
 
-  const orderedJobs = [...jobs.values()].sort((a, b) => a.matchCode.localeCompare(b.matchCode, undefined, { numeric: true }));
-  els.jobBoard.innerHTML = '';
+  return [...jobs.values()].sort((a, b) => a.matchCode.localeCompare(b.matchCode, undefined, { numeric: true }));
+}
 
-  if (orderedJobs.length === 0) {
-    els.jobBoard.innerHTML = '<p class="drawer-empty">Sin trabajos registrados todavía.</p>';
-    return;
-  }
-
-  for (const job of orderedJobs) {
-    const row = document.createElement('article');
-    row.className = `job-row ${job.status === 'Error' ? 'error' : ''}`;
-    row.innerHTML = `
-      <strong>${job.matchCode}</strong>
-      <span>${job.status || 'Pendiente'}</span>
-      <small>${job.rows ?? '-'} tipos / ${job.availableRows ?? '-'} disponibles</small>
-    `;
-    els.jobBoard.appendChild(row);
+async function postJson(path, body = {}) {
+  const r = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  if (!r.ok && r.status !== 202) {
+    const p = await r.json().catch(() => ({}));
+    throw new Error(p.error || `Request failed: ${r.status}`);
   }
 }
 
-function renderCycleOutput() {
-  const cycle = state.latestCycle;
+document.addEventListener('alpine:init', () => {
+  Alpine.data('tracker', () => ({
+    latestCycle: null,
+    job: null,
+    events: [],
+    filter: 'available',
+    now: Date.now(),
+    selectedRow: null,
+    selectedKey: null,
+    drawerType: null,
+    drawerMatchCode: null,
+    systemOpen: false,
+    queue: null,
+    pulseMatches: {},
+    isAdmin: location.pathname.replace(/\/$/, '').endsWith('/admin') || new URLSearchParams(location.search).has('admin'),
+    visitorCountry: 'Mexico',
+    matchConcurrency: 6,
+    intervalMs: 60000,
 
-  if (!cycle) {
-    els.cycleOutput.textContent = '{}';
-    return;
-  }
+    init() {
+      this.refresh();
+      setInterval(() => this.now = Date.now(), 1000);
+      setInterval(() => this.refresh(), 10000);
 
-  els.cycleOutput.textContent = JSON.stringify({
-    cicloInicio: cycle.cycleStartedAt,
-    cicloFin: cycle.cycleCompletedAt,
-    modo: cycle.mode || 'browser-discovery',
-    tienda: cycle.visitorCountry,
-    partidosDetectados: cycle.matchCardsFound,
-    partidosRevisados: cycle.matchCardsScanned,
-    partidosFallidos: cycle.failedMatchCount || 0,
-    parcial: Boolean(cycle.partial),
-    trabajosParalelos: cycle.matchConcurrency,
-    fastFetchConcurrency: cycle.fastFetchConcurrency || null,
-    tiposDeBoleto: cycle.rowCount,
-    disponibles: cycle.availableRowCount,
-    alertasActivas: activeAlerts(cycle).length,
-    retencionAlertasMs: cycle.alertRetentionMs || DEFAULT_ALERT_RETENTION_MS,
-  }, null, 2);
-}
+      const sse = new EventSource('/events');
+      sse.onmessage = (msg) => {
+        const event = JSON.parse(msg.data);
+        this.events = [event, ...this.events].slice(0, 140);
 
-function render() {
-  syncSelectedRow();
-  renderMetrics(state.latestCycle);
-  renderAlerts(state.latestCycle);
-  renderGameBoard();
-  renderTicketDetail();
-  renderJobBoard();
-  renderEvents();
-  renderCycleOutput();
-}
+        if (event.matchCode) {
+          if (['match_job_started', 'match_job_claimed', 'lounge_json_wait_started'].includes(event.event)) {
+            this.pulseMatches = { ...this.pulseMatches, [event.matchCode]: this.now };
+          }
+          if (event.event === 'match_job_result' || event.event === 'match_job_stored') {
+            const pm = { ...this.pulseMatches };
+            delete pm[event.matchCode];
+            this.pulseMatches = pm;
+          }
+        }
 
-function renderFilterButtons() {
-  for (const button of els.availabilityFilter.querySelectorAll('button[data-filter]')) {
-    button.classList.toggle('active', button.dataset.filter === state.filter);
-  }
-}
+        if (['dashboard_cycle_completed', 'dashboard_cycle_failed', 'cycle_completed'].includes(event.event)) {
+          this.pulseMatches = {};
+          this.refresh();
+        }
+      };
 
-function applyMode() {
-  document.body.classList.toggle('admin-mode', state.isAdmin);
-  document.body.classList.toggle('public-mode', !state.isAdmin);
+      document.body.classList.toggle('admin-mode', this.isAdmin);
+      document.body.classList.toggle('public-mode', !this.isAdmin);
+    },
 
-  for (const element of document.querySelectorAll('[data-admin-only]')) {
-    element.hidden = !state.isAdmin;
-  }
-}
+    async refresh() {
+      const r = await fetch('/api/state');
+      const p = await r.json();
+      this.latestCycle = p.latestCycle;
+      this.job = p.job;
+      this.queue = p.queue || null;
+      if (p.job?.events?.length) this.events = p.job.events;
+    },
 
-async function refresh() {
-  const response = await fetch('/api/state');
-  const payload = await response.json();
-  state.latestCycle = payload.latestCycle;
-  state.job = payload.job;
-  state.events = payload.job?.events || state.events;
-  setStatus(payload.job);
-  render();
-}
+    requestBody() {
+      return { visitorCountry: this.visitorCountry, matchConcurrency: Number(this.matchConcurrency || 1), intervalMs: Number(this.intervalMs || 60000) };
+    },
 
-function openDrawer() {
-  els.drawer.classList.add('open');
-  els.drawer.setAttribute('aria-hidden', 'false');
-  els.drawerBackdrop.hidden = false;
-}
+    async startTicker() {
+      try { await postJson('/api/start-ticker', this.requestBody()); await this.refresh(); }
+      catch (e) { this.events = [{ event: 'dashboard_cycle_failed', error: e.message, emittedAt: new Date().toISOString() }, ...this.events]; }
+    },
 
-function closeDrawer() {
-  els.drawer.classList.remove('open');
-  els.drawer.setAttribute('aria-hidden', 'true');
-  els.drawerBackdrop.hidden = true;
-}
+    async stopTicker() { await postJson('/api/stop-ticker'); await this.refresh(); },
 
-els.runCycleButton.addEventListener('click', async () => {
-  try {
-    await postJson('/api/run-cycle', requestBody());
-    await refresh();
-  } catch (error) {
-    state.events.unshift({ event: 'dashboard_cycle_failed', error: error.message, emittedAt: new Date().toISOString() });
-    render();
-  }
+    async runCycle() {
+      try { await postJson('/api/run-cycle', this.requestBody()); await this.refresh(); }
+      catch (e) { this.events = [{ event: 'dashboard_cycle_failed', error: e.message, emittedAt: new Date().toISOString() }, ...this.events]; }
+    },
+
+    // --- Status ---
+    get statusClass() {
+      if (this.job?.lastError) return 'error';
+      if (this.job?.running) return 'live';
+      if (this.job?.tickerRunning) return 'live';
+      return 'idle';
+    },
+    get statusLabel() {
+      if (this.job?.lastError) return 'Error';
+      if (this.job?.running) return describeEvent(this.job?.lastEvent) || 'Ejecutando';
+      if (this.job?.tickerRunning) return `En vivo · ${this.latestCycle?.visitorCountry || this.visitorCountry}`;
+      return 'En espera';
+    },
+    get showStartBtn() { return this.isAdmin && !this.job?.tickerRunning; },
+    get showStopBtn() { return this.isAdmin && this.job?.tickerRunning; },
+    get cycleDisabled() { return Boolean(this.job?.running); },
+
+    // --- Metrics ---
+    get freshness() { return timeAgo(this.latestCycle?.cycleCompletedAt, this.now); },
+    get freshnessClass() {
+      const ts = this.latestCycle?.cycleCompletedAt;
+      if (!ts) return '';
+      const age = this.now - new Date(ts).getTime();
+      if (age > 4 * 60 * 1000) return 'stat-value--critical';
+      if (age > 2 * 60 * 1000) return 'stat-value--stale';
+      return 'stat-value--green';
+    },
+    isScanning(matchCode) { return Boolean(this.pulseMatches[matchCode]); },
+    get matchesFound() { return this.latestCycle?.matchCardsFound ?? 0; },
+    get matchesScanned() { return this.latestCycle?.matchCardsScanned ?? 0; },
+    get rowCount() { return this.latestCycle?.rowCount ?? 0; },
+    get availableCount() { return this.latestCycle?.availableRowCount ?? 0; },
+    get lastUpdated() {
+      return this.latestCycle?.cycleCompletedAt ? new Date(this.latestCycle.cycleCompletedAt).toLocaleString() : 'Sin ciclos aún';
+    },
+    get shopLabel() { return this.latestCycle?.visitorCountry || this.visitorCountry; },
+
+    // --- Alerts ---
+    get alerts() { return activeAlerts(this.latestCycle, this.now).slice(0, 8); },
+    get alertCount() { return activeAlerts(this.latestCycle, this.now).length; },
+    get retentionMin() { return Math.round(alertRetentionMs(this.latestCycle) / 60000); },
+    alertZoneColor(row) { return zoneColor(row); },
+    alertTeams(row) { return matchInfo(row, this.latestCycle).teams; },
+    alertSub(row) {
+      const zone = zoneName(row);
+      const seat = row.seatingName || row.seatingCode || '';
+      if (!seat || seat === zone) return zone;
+      return `${zone} · ${seat}`;
+    },
+    alertQty(row) { return Number(row.availableQuantity || 0); },
+
+    // --- Filters & Matches ---
+    setFilter(f) { this.filter = f; this.closeDetail(); },
+
+    get filteredRows() {
+      const rows = this.latestCycle?.rows || [];
+      if (this.filter === 'available') return rows.filter((r) => r.available);
+      if (this.filter === 'unavailable') return rows.filter((r) => !r.available);
+      return rows;
+    },
+
+    get matches() {
+      return groupRowsByMatch(this.filteredRows, this.latestCycle);
+    },
+
+    matchMeta(m) {
+      const loc = matchLocation({ matchCode: m.matchCode, ...m }, this.latestCycle);
+      const rivals = possibleRivalsText(m.teams);
+      return loc + (rivals ? ` · ${rivals}` : '');
+    },
+
+    matchAvailLabel(m) {
+      const all = (this.latestCycle?.rows || []).filter((r) => r.matchCode === m.matchCode);
+      const avail = all.filter((r) => r.available).length;
+      return `${avail}/${all.length} configs`;
+    },
+
+    matchAvailQty(m) {
+      const all = (this.latestCycle?.rows || []).filter((r) => r.matchCode === m.matchCode);
+      return all.reduce((s, r) => s + Number(r.availableQuantity || 0), 0);
+    },
+
+    sortedTickets(m) { return [...m.rows].sort(ticketSort); },
+
+    // --- Ticket helpers ---
+    tZoneColor(row) { return zoneColor(row); },
+    tZoneName(row) { return zoneName(row); },
+    tSub(row) { return row.seatingName || row.seatingCode || 'Configuración'; },
+    tQty(row) { return Number(row.availableQuantity || 0); },
+    tAvailColor(row) { return availColor(this.tQty(row)); },
+    tAvailLabel(row) { return row.available ? `${this.tQty(row)} disp.` : 'No disponible'; },
+    tFreshness(row) { return freshnessInfo(row, this.latestCycle, this.now); },
+    tPulse(row) { return this.tFreshness(row).type === 'new'; },
+    tKey(row) { return ticketKey(row); },
+    tSelected(row) { return this.selectedKey === ticketKey(row); },
+
+    // --- Detail Drawer ---
+    selectTicket(row) {
+      this.selectedRow = row;
+      this.selectedKey = ticketKey(row);
+      this.drawerType = 'ticket';
+      this.drawerMatchCode = null;
+    },
+
+    openMatchInfo(matchCode) {
+      this.drawerType = 'match';
+      this.drawerMatchCode = matchCode;
+      this.selectedRow = null;
+      this.selectedKey = null;
+    },
+
+    closeDetail() {
+      this.selectedRow = null;
+      this.selectedKey = null;
+      this.drawerType = null;
+      this.drawerMatchCode = null;
+    },
+
+    get detailOpen() { return this.drawerType !== null; },
+    get detailIsTicket() { return this.drawerType === 'ticket' && this.selectedRow; },
+    get detailIsMatch() { return this.drawerType === 'match' && this.drawerMatchCode; },
+    get detailTitle() { return this.detailIsMatch ? 'INFORMACIÓN DEL PARTIDO' : 'DETALLE DEL BOLETO'; },
+
+    // Ticket detail computed
+    get dRow() { return this.selectedRow; },
+    get dInfo() { return this.dRow ? matchInfo(this.dRow, this.latestCycle) : {}; },
+    get dColor() { return this.dRow ? zoneColor(this.dRow) : '#999'; },
+    get dZone() { return this.dRow ? zoneName(this.dRow) : ''; },
+    get dSub() { return this.dRow ? (this.dRow.seatingName || this.dRow.seatingCode || 'Configuración') : ''; },
+    get dQty() { return this.dRow ? Number(this.dRow.availableQuantity || 0) : 0; },
+    get dFreshness() { return this.dRow ? freshnessInfo(this.dRow, this.latestCycle, this.now) : { type: 'none', text: '' }; },
+    get dCheckedLabel() { return this.dRow?.checkedAt ? `Revisado hace ${timeAgo(this.dRow.checkedAt, this.now)}` : 'Sin revisión reciente'; },
+    get dBuyUrl() { return this.dRow?.fifaShopUrl || this.latestCycle?.shopUrl || '#'; },
+    get dStatusLabel() {
+      if (!this.dRow) return '';
+      if (this.dFreshness.type === 'new') return alertReason(this.dRow) === 'increased' ? 'Más stock' : 'Nuevo';
+      if (!this.dRow.available) return 'No disponible';
+      return 'Revisado';
+    },
+    get dStatusColor() {
+      if (!this.dRow) return '#999';
+      if (!this.dRow.available) return '#9a9688';
+      return '#56544d';
+    },
+    get dStatusBg() {
+      if (!this.dRow) return '#f1efe8';
+      if (this.dFreshness.type === 'new') return '#f1efe8';
+      return '#f3f1ea';
+    },
+    get dFields() {
+      if (!this.dRow) return [];
+      return [
+        { k: 'Asiento', v: this.dSub },
+        { k: 'Código de asiento', v: this.dRow.seatingCode },
+        { k: 'Tipo', v: this.dZone },
+        { k: 'Clase', v: this.dRow.packageClass || this.dRow.packageShortTitle || '' },
+        { k: 'Precio base', v: `Desde ${money(this.dRow.priceMxn)} MXN / persona` },
+        { k: 'Performance ID', v: this.dRow.performanceId },
+        { k: 'SeatCategory ID', v: this.dRow.rawSeatingSection?.SeatCategoryId },
+        { k: 'AudienceSub ID', v: this.dRow.rawSeatingSection?.AudienceSubCategoryId },
+      ].filter((f) => f.v);
+    },
+    get dDesc() { return this.dRow?.rawTicketType?.description || ZONE_DESCRIPTIONS[this.dZone] || ''; },
+    get dDetails() { return Array.isArray(this.dRow?.rawTicketType?.details) ? this.dRow.rawTicketType.details : []; },
+
+    // Match detail computed
+    get dmRows() {
+      if (!this.drawerMatchCode) return [];
+      return (this.latestCycle?.rows || []).filter((r) => r.matchCode === this.drawerMatchCode);
+    },
+    get dmInfo() { return this.dmRows.length ? matchInfo(this.dmRows[0], this.latestCycle) : {}; },
+    get dmMeta() { return this.dmRows.length ? matchLocation(this.dmRows[0], this.latestCycle) : ''; },
+    get dmAvailRows() { return this.dmRows.filter((r) => r.available); },
+    get dmAvailQty() { return this.dmAvailRows.reduce((s, r) => s + Number(r.availableQuantity || 0), 0); },
+    get dmZones() {
+      const map = {};
+      for (const row of this.dmAvailRows) {
+        const z = zoneName(row);
+        const c = zoneColor(row);
+        const p = Number(row.priceMxn || 0);
+        const q = Number(row.availableQuantity || 0);
+        if (!map[z]) map[z] = { name: z, color: c, count: 0, configs: 0, min: Infinity };
+        map[z].count += q;
+        map[z].configs += 1;
+        map[z].min = Math.min(map[z].min, p);
+      }
+      return Object.values(map);
+    },
+
+    // --- System drawer ---
+    get jobs() { return computeJobs(this.events, this.job, this.latestCycle); },
+    get visibleEvents() { return this.events.slice(0, 120); },
+    get cycleOutput() {
+      const c = this.latestCycle;
+      if (!c) return '{}';
+      return JSON.stringify({
+        cicloInicio: c.cycleStartedAt, cicloFin: c.cycleCompletedAt,
+        modo: c.mode || 'browser-discovery', tienda: c.visitorCountry,
+        partidosDetectados: c.matchCardsFound, partidosRevisados: c.matchCardsScanned,
+        partidosFallidos: c.failedMatchCount || 0, parcial: Boolean(c.partial),
+        trabajosParalelos: c.matchConcurrency, tiposDeBoleto: c.rowCount,
+        disponibles: c.availableRowCount, alertasActivas: this.alertCount,
+        retencionAlertasMs: c.alertRetentionMs || DEFAULT_ALERT_RETENTION_MS,
+      }, null, 2);
+    },
+
+    // --- Template helpers ---
+    money(v) { return money(v); },
+    availColor(q) { return availColor(q); },
+    timeAgo(ts) { return timeAgo(ts, this.now); },
+    describeEvent(e) { return describeEvent(e); },
+    eventTime(e) { return new Date(e.emittedAt || Date.now()).toLocaleTimeString(); },
+  }));
 });
-
-els.startTickerButton.addEventListener('click', async () => {
-  try {
-    await postJson('/api/start-ticker', requestBody());
-    await refresh();
-  } catch (error) {
-    state.events.unshift({ event: 'dashboard_cycle_failed', error: error.message, emittedAt: new Date().toISOString() });
-    render();
-  }
-});
-
-els.stopTickerButton.addEventListener('click', async () => {
-  await postJson('/api/stop-ticker');
-  await refresh();
-});
-
-els.drawerButton.addEventListener('click', openDrawer);
-els.closeDrawerButton.addEventListener('click', closeDrawer);
-els.drawerBackdrop.addEventListener('click', closeDrawer);
-els.ticketBackdrop.addEventListener('click', closeDetail);
-els.closeDetailButton.addEventListener('click', closeDetail);
-els.availabilityFilter.addEventListener('click', (event) => {
-  const button = event.target.closest('button[data-filter]');
-
-  if (!button) {
-    return;
-  }
-
-  state.filter = button.dataset.filter;
-  closeDetail();
-  renderFilterButtons();
-  render();
-});
-
-const events = new EventSource('/events');
-events.onmessage = (message) => {
-  const event = JSON.parse(message.data);
-  state.events.unshift(event);
-  state.events = state.events.slice(0, 140);
-
-  if (
-    event.event === 'dashboard_cycle_completed' ||
-    event.event === 'dashboard_cycle_failed' ||
-    event.event === 'cycle_completed'
-  ) {
-    refresh();
-  } else {
-    setStatus(state.job);
-    renderJobBoard();
-    renderEvents();
-  }
-};
-
-applyMode();
-renderFilterButtons();
-refresh();
-setInterval(refresh, 10000);
-setInterval(() => {
-  renderMetrics(state.latestCycle);
-}, 1000);

@@ -9,9 +9,13 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/styles.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
+    <script src="/app.js"></script>
   </head>
   <body>
-    <main class="shell">
+    <main class="shell" x-data="tracker">
+
+      <!-- ===== TOPBAR ===== -->
       <header class="topbar">
         <div class="topbar-left">
           <div class="logo">26</div>
@@ -21,126 +25,314 @@
           </div>
         </div>
         <div class="topbar-right">
-          <div id="statusPill" class="status-pill idle">
+          <div class="status-pill" :class="statusClass">
             <span class="status-dot-wrap">
               <span class="status-dot-core"></span>
               <span class="status-dot-pulse"></span>
             </span>
-            <span id="statusText">En espera</span>
+            <span x-text="statusLabel">En espera</span>
           </div>
-          <button id="startTickerButton" class="btn-dark" data-admin-only hidden>Iniciar</button>
-          <button id="stopTickerButton" class="btn-dark" data-admin-only hidden>Detener</button>
-          <button id="drawerButton" class="btn-outline" data-admin-only hidden>Sistema</button>
+          <button x-show="showStartBtn" :disabled="cycleDisabled" class="btn-dark" @click="startTicker()">Iniciar</button>
+          <button x-show="showStopBtn" class="btn-dark" @click="stopTicker()">Detener</button>
+          <button x-show="isAdmin" class="btn-outline" @click="systemOpen = true">Sistema</button>
         </div>
       </header>
 
+      <!-- ===== STAT STRIP ===== -->
       <div class="stat-strip">
-        <div class="stat-item">
+        <div class="stat-item" data-tip="Tiempo desde el último escaneo completo">
           <span class="stat-label">FRESCURA</span>
-          <span id="freshnessText" class="stat-value stat-value--green">Sin datos</span>
+          <span class="stat-value" :class="freshnessClass" x-text="freshness">Sin datos</span>
         </div>
         <div class="stat-divider"></div>
-        <div class="stat-item" data-priority="secondary">
-          <span class="stat-label">DETECTADOS</span>
-          <span id="matchesFound" class="stat-value">0</span>
+        <div class="stat-item" data-priority="secondary" data-tip="Partidos encontrados en la tienda FIFA">
+          <span class="stat-label">PARTIDOS</span>
+          <span class="stat-value" x-text="matchesFound">0</span>
         </div>
-        <div class="stat-item" data-priority="secondary">
-          <span class="stat-label">REVISADOS</span>
-          <span id="matchesScanned" class="stat-value">0</span>
+        <div class="stat-item" data-priority="secondary" data-tip="Partidos escaneados con éxito en el último ciclo">
+          <span class="stat-label">ESCANEADOS</span>
+          <span class="stat-value" x-text="matchesScanned">0</span>
         </div>
-        <div class="stat-item" data-priority="secondary">
+        <div class="stat-item" data-priority="secondary" data-tip="Tipos de boleto distintos (combinaciones de zona y asiento)">
           <span class="stat-label">TIPOS</span>
-          <span id="rowCount" class="stat-value">0</span>
+          <span class="stat-value" x-text="rowCount">0</span>
         </div>
-        <div class="stat-item">
+        <div class="stat-item" data-tip="Tipos de boleto con stock disponible">
           <span class="stat-label">DISPONIBLES</span>
-          <span id="availableCount" class="stat-value stat-value--green">0</span>
+          <span class="stat-value stat-value--green" x-text="availableCount">0</span>
         </div>
-        <div class="stat-item">
-          <span class="stat-label">NUEVAS ALERTAS</span>
+        <div class="stat-item" data-tip="Boletos que aparecieron o subieron stock recientemente">
+          <span class="stat-label">ALERTAS</span>
           <div class="stat-alert-value">
             <span class="alert-dot"></span>
-            <span id="alertCount" class="stat-value stat-value--amber">0</span>
+            <span class="stat-value stat-value--amber" x-text="alertCount">0</span>
           </div>
         </div>
       </div>
 
-      <section id="alertPanel" class="alert-band" hidden></section>
+      <!-- ===== ALERT BAND ===== -->
+      <section class="alert-band" x-show="alertCount > 0" x-cloak>
+        <!-- Desktop summary -->
+        <div class="alert-summary alert-summary-desktop">
+          <div class="alert-summary-count">
+            <span style="width:9px;height:9px;border-radius:50%;background:#c8820a;flex:none"></span>
+            <strong x-text="alertCount">0</strong>
+            <span>ALERTAS<br>NUEVAS</span>
+          </div>
+          <p>Boletos que aparecieron o subieron stock en los últimos <span x-text="retentionMin">10</span> minutos.</p>
+        </div>
+        <!-- Mobile summary -->
+        <div class="alert-summary-mobile">
+          <span style="width:7px;height:7px;border-radius:50%;background:#c8820a;flex:none"></span>
+          <span class="alert-mobile-count"><span x-text="alertCount">0</span> alertas nuevas</span>
+          <span class="alert-mobile-sub">aparecieron o subieron stock</span>
+        </div>
+        <!-- Alert cards -->
+        <div class="alert-grid">
+          <template x-for="row in alerts" :key="tKey(row)">
+            <button type="button" class="alert-card" @click="selectTicket(row)">
+              <div class="alert-card-head">
+                <span class="zone-dot" :style="{background: alertZoneColor(row)}"></span>
+                <span class="alert-card-code" x-text="row.matchCode || 'N/A'"></span>
+                <span class="alert-card-zone" x-text="alertTeams(row)"></span>
+              </div>
+              <div class="alert-card-sub" x-text="alertSub(row)"></div>
+              <div class="alert-card-foot">
+                <span class="alert-card-price" x-text="money(row.priceMxn)"></span>
+                <span class="alert-card-avail" :style="{color: availColor(alertQty(row))}" x-text="alertQty(row) + ' disp.'"></span>
+              </div>
+            </button>
+          </template>
+        </div>
+      </section>
 
+      <!-- ===== BOARD TOOLBAR ===== -->
       <div class="board-toolbar">
         <div>
           <div class="board-toolbar-title">Partidos y boletos</div>
           <div class="board-toolbar-sub">Disponibilidad agrupada por partido · clic en un boleto para el detalle</div>
         </div>
-        <div id="availabilityFilter" class="seg-control" role="group" aria-label="Filtro de disponibilidad">
-          <button type="button" data-filter="available" class="active">Disponibles</button>
-          <button type="button" data-filter="all">Todos</button>
-          <button type="button" data-filter="unavailable">No disponibles</button>
+        <div class="seg-control" role="group" aria-label="Filtro de disponibilidad">
+          <button type="button" :class="{ active: filter === 'available' }" @click="setFilter('available')">Disponibles</button>
+          <button type="button" :class="{ active: filter === 'all' }" @click="setFilter('all')">Todos</button>
+          <button type="button" :class="{ active: filter === 'unavailable' }" @click="setFilter('unavailable')">No disponibles</button>
         </div>
       </div>
 
-      <section id="gameBoard" class="game-board"></section>
+      <!-- ===== GAME BOARD ===== -->
+      <section class="game-board">
+        <template x-if="matches.length === 0">
+          <div class="empty-state">
+            <h2>No hay boletos para mostrar</h2>
+            <p>El último ciclo no encontró boletos con el filtro actual. Cambia el filtro o espera el siguiente ciclo.</p>
+          </div>
+        </template>
+        <template x-for="m in matches" :key="m.matchCode">
+          <article class="match-card" :class="{ scanning: isScanning(m.matchCode) }">
+            <div class="match-head">
+              <div class="match-head-left">
+                <span class="match-pill" x-text="m.matchCode"></span>
+                <div style="min-width:0">
+                  <div class="match-title" x-text="m.teams"></div>
+                  <div class="match-meta" x-text="matchMeta(m)"></div>
+                </div>
+              </div>
+              <div class="match-head-right">
+                <button type="button" class="match-info-link" @click.stop="openMatchInfo(m.matchCode)">Info →</button>
+                <span class="match-avail-badge" x-text="matchAvailLabel(m)"></span>
+                <div class="match-detected">
+                  <strong x-text="matchAvailQty(m).toLocaleString('en-US')"></strong>
+                  <small>BOLETOS</small>
+                </div>
+              </div>
+            </div>
+            <template x-if="m.rows.length === 0">
+              <div class="match-empty">Sin boletos en este filtro.</div>
+            </template>
+            <div class="ticket-grid" x-show="m.rows.length > 0">
+              <template x-for="row in sortedTickets(m)" :key="tKey(row)">
+                <div role="button" tabindex="0"
+                     class="ticket-cell"
+                     :class="{ unavailable: !row.available, selected: tSelected(row), flash: tPulse(row) }"
+                     @click="selectTicket(row)"
+                     @keydown.enter.prevent="selectTicket(row)"
+                     @keydown.space.prevent="selectTicket(row)">
+                  <span class="zone-dot" :style="{background: tZoneColor(row)}"></span>
+                  <div class="ticket-info">
+                    <span class="ticket-zone" x-text="tZoneName(row)"></span>
+                    <span class="ticket-sub" x-text="tSub(row)"></span>
+                    <span class="ticket-freshness">
+                      <template x-if="tFreshness(row).type === 'new'">
+                        <span class="fresh-tag-new">
+                          <span style="width:6px;height:6px;border-radius:50%;background:#c8820a;flex:none"></span>
+                          <span x-text="tFreshness(row).text"></span>
+                        </span>
+                      </template>
+                      <template x-if="tFreshness(row).type === 'rev'">
+                        <span class="fresh-tag-rev" x-text="tFreshness(row).text"></span>
+                      </template>
+                      <template x-if="tFreshness(row).type === 'none'">
+                        <span class="fresh-tag-none" x-text="tFreshness(row).text"></span>
+                      </template>
+                    </span>
+                  </div>
+                  <div class="ticket-nums">
+                    <span class="ticket-price" x-text="money(row.priceMxn)"></span>
+                    <span class="ticket-avail" :style="{color: tAvailColor(row)}" x-text="tAvailLabel(row)"></span>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </article>
+        </template>
+      </section>
 
+      <!-- ===== LAST UPDATED ===== -->
       <div class="last-updated">
-        <span id="lastUpdated">Sin ciclos aún</span>
-        <span> · Tienda activa: <b id="shopContextLabel">Mexico</b></span>
+        <span x-text="lastUpdated">Sin ciclos aún</span>
+        <span> · Tienda activa: <b x-text="shopLabel">Mexico</b></span>
       </div>
+
+      <!-- ===== TICKET/MATCH DETAIL DRAWER ===== -->
+      <aside class="detail-drawer" :class="{ open: detailOpen }" x-show="detailOpen" x-cloak>
+        <div class="detail-header">
+          <span class="label-mono" x-text="detailTitle">DETALLE DEL BOLETO</span>
+          <button class="btn-outline btn-sm" @click="closeDetail()">Cerrar</button>
+        </div>
+
+        <!-- Ticket detail -->
+        <div class="detail-body" x-show="detailIsTicket">
+          <div class="detail-top">
+            <div class="detail-top-left">
+              <div class="detail-match-ref" x-text="(dInfo.matchCode || '') + ' · ' + (dInfo.teams || '')"></div>
+              <div class="detail-zone-row">
+                <span class="detail-zone-dot" :style="{background: dColor}"></span>
+                <span class="detail-zone-name" x-text="dZone"></span>
+              </div>
+              <div class="detail-sub" x-text="dSub"></div>
+            </div>
+            <div class="detail-top-right">
+              <div class="detail-price" x-text="money(dRow?.priceMxn)"></div>
+              <div class="detail-avail" :style="{color: availColor(dQty)}" x-text="dRow?.available ? dQty + ' disponibles' : 'No disponible'"></div>
+            </div>
+          </div>
+          <div class="detail-status-row">
+            <span class="detail-status-badge" :style="{color: dStatusColor, background: dStatusBg}" x-text="dStatusLabel"></span>
+            <span class="detail-status-time" x-text="dCheckedLabel"></span>
+          </div>
+          <a class="btn-cta" :href="dBuyUrl" target="_blank" rel="noreferrer" style="margin-top:16px">ABRIR EN FIFA →</a>
+          <div class="detail-field-grid">
+            <template x-for="f in dFields" :key="f.k">
+              <div class="detail-field">
+                <div class="detail-field-label" x-text="f.k"></div>
+                <div class="detail-field-value" x-text="f.v"></div>
+              </div>
+            </template>
+          </div>
+          <div class="detail-desc" x-show="dDesc" x-text="dDesc"></div>
+          <template x-if="dDetails.length > 0">
+            <div class="detail-includes">
+              <div class="detail-includes-title">INCLUYE</div>
+              <template x-for="d in dDetails" :key="d.title">
+                <div class="detail-include-item">
+                  <span class="detail-include-dot" :style="{background: dColor}"></span>
+                  <div class="detail-include-text"><b x-text="(d.title || 'Detalle') + ':'"></b> <span x-text="d.content || ''"></span></div>
+                </div>
+              </template>
+            </div>
+          </template>
+        </div>
+
+        <!-- Match detail -->
+        <div class="detail-body" x-show="detailIsMatch">
+          <div class="detail-match-ref" x-text="dmInfo.matchCode || ''"></div>
+          <div class="detail-match-title" x-text="dmInfo.teams || ''"></div>
+          <div class="detail-match-meta" x-text="dmMeta"></div>
+          <div class="detail-match-stats">
+            <div class="detail-match-stat">
+              <div class="label-mono">BOLETOS DISPONIBLES</div>
+              <div class="detail-match-stat-value" x-text="dmAvailQty.toLocaleString('en-US')"></div>
+            </div>
+            <div class="detail-match-stat">
+              <div class="label-mono">CONFIGURACIONES</div>
+              <div class="detail-match-stat-value" style="color:var(--green)" x-text="dmAvailRows.length + ' / ' + dmRows.length"></div>
+            </div>
+          </div>
+          <template x-if="dmZones.length > 0">
+            <div>
+              <div class="detail-includes-title" style="margin-top:20px">DISPONIBLE POR ZONA</div>
+              <div class="detail-zone-list">
+                <template x-for="z in dmZones" :key="z.name">
+                  <div class="detail-zone-item">
+                    <span class="detail-zone-item-dot" :style="{background: z.color}"></span>
+                    <span class="detail-zone-item-name" x-text="z.name"></span>
+                    <span class="detail-zone-item-from" x-text="z.count + ' boletos · ' + z.configs + ' config'"></span>
+                    <span class="detail-zone-item-from" x-text="'desde ' + money(z.min)"></span>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </template>
+        </div>
+      </aside>
+      <div class="drawer-backdrop" x-show="detailOpen" @click="closeDetail()" x-cloak></div>
+
+      <!-- ===== SYSTEM DRAWER (admin) ===== -->
+      <aside class="system-drawer" :class="{ open: systemOpen }">
+        <div class="system-drawer-head">
+          <div>
+            <div class="label-mono">OPERACIÓN</div>
+            <h2>Sistema</h2>
+          </div>
+          <button class="btn-outline" @click="systemOpen = false">Cerrar</button>
+        </div>
+
+        <section class="system-section">
+          <h3>Configuración de depuración</h3>
+          <div class="controls">
+            <label>Tienda / comprador <input x-model="visitorCountry" autocomplete="off"></label>
+            <label>Trabajos paralelos <input type="number" min="1" max="10" x-model.number="matchConcurrency"></label>
+            <label>Intervalo ms <input type="number" min="30000" step="1000" x-model.number="intervalMs"></label>
+            <button class="btn-outline" :disabled="cycleDisabled" @click="runCycle()">Ejecutar un ciclo manual</button>
+          </div>
+        </section>
+
+        <section class="system-section">
+          <h3>Trabajos del ciclo</h3>
+          <div class="job-board">
+            <template x-if="jobs.length === 0">
+              <p class="drawer-empty">Sin trabajos registrados todavía.</p>
+            </template>
+            <template x-for="j in jobs" :key="j.matchCode">
+              <article class="job-row" :class="{ error: j.status === 'Error' }">
+                <strong x-text="j.matchCode"></strong>
+                <span x-text="j.status || 'Pendiente'"></span>
+                <small x-text="(j.rows ?? '-') + ' tipos / ' + (j.availableRows ?? '-') + ' disponibles'"></small>
+              </article>
+            </template>
+          </div>
+        </section>
+
+        <section class="system-section">
+          <h3>Línea de tiempo</h3>
+          <ol id="eventLog">
+            <template x-for="(evt, i) in visibleEvents" :key="i">
+              <li>
+                <time x-text="eventTime(evt)"></time>
+                <strong x-text="describeEvent(evt)"></strong>
+                <span class="event-error" x-show="evt.error" x-text="evt.error"></span>
+              </li>
+            </template>
+          </ol>
+        </section>
+
+        <section class="system-section">
+          <h3>Resumen técnico</h3>
+          <pre x-text="cycleOutput">{}</pre>
+        </section>
+      </aside>
+      <div class="drawer-backdrop" x-show="systemOpen" @click="systemOpen = false" x-cloak></div>
+
     </main>
-
-    <aside id="ticketDetail" class="detail-drawer" hidden aria-hidden="true">
-      <div class="detail-header">
-        <span id="detailTitle" class="label-mono">DETALLE DEL BOLETO</span>
-        <button id="closeDetailButton" class="btn-outline btn-sm">Cerrar</button>
-      </div>
-      <div id="detailBody" class="detail-body"></div>
-    </aside>
-    <div id="ticketBackdrop" class="drawer-backdrop" hidden></div>
-
-    <aside id="systemDrawer" class="system-drawer" aria-hidden="true">
-      <div class="system-drawer-head">
-        <div>
-          <div class="label-mono">OPERACIÓN</div>
-          <h2>Sistema</h2>
-        </div>
-        <button id="closeDrawerButton" class="btn-outline">Cerrar</button>
-      </div>
-
-      <section class="system-section">
-        <h3>Configuración de depuración</h3>
-        <div class="controls">
-          <label>
-            Tienda / comprador
-            <input id="countryInput" value="Mexico" autocomplete="off">
-          </label>
-          <label>
-            Trabajos paralelos
-            <input id="concurrencyInput" type="number" min="1" max="10" value="6">
-          </label>
-          <label>
-            Intervalo ms
-            <input id="intervalInput" type="number" min="30000" step="1000" value="60000">
-          </label>
-          <button id="runCycleButton" class="btn-outline">Ejecutar un ciclo manual</button>
-        </div>
-      </section>
-
-      <section class="system-section">
-        <h3>Trabajos del ciclo</h3>
-        <div id="jobBoard" class="job-board"></div>
-      </section>
-
-      <section class="system-section">
-        <h3>Línea de tiempo</h3>
-        <ol id="eventLog"></ol>
-      </section>
-
-      <section class="system-section">
-        <h3>Resumen técnico</h3>
-        <pre id="cycleOutput">{}</pre>
-      </section>
-    </aside>
-    <div id="drawerBackdrop" class="drawer-backdrop" hidden></div>
-
-    <script src="/app.js"></script>
   </body>
 </html>

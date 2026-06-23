@@ -34,8 +34,23 @@
 }
 
 * { box-sizing: border-box; margin: 0; }
+[x-cloak] { display: none !important; }
 body { font-family: var(--font-sans); color: var(--ink); background: var(--surface); overflow-x: hidden; }
 .shell { overflow-x: hidden; }
+
+@keyframes ticketflash {
+  0% { background: #faf5e0; }
+  100% { background: var(--panel); }
+}
+@keyframes matchpulse {
+  0% { box-shadow: 0 0 0 0 rgba(184,144,47,.25); }
+  70% { box-shadow: 0 0 0 6px rgba(184,144,47,0); }
+  100% { box-shadow: 0 0 0 0 rgba(184,144,47,0); }
+}
+.match-card.scanning { animation: matchpulse 1.6s ease-out; }
+.ticket-cell.flash { animation: ticketflash 3s ease-out; }
+.stat-value--stale { color: var(--amber-dot) !important; }
+.stat-value--critical { color: #c0392b !important; }
 
 @keyframes livepulse {
   0% { transform: scale(1); opacity: .7; }
@@ -49,6 +64,16 @@ body { font-family: var(--font-sans); color: var(--ink); background: var(--surfa
 @keyframes sheeti {
   from { transform: translateY(40px); opacity: 0; }
   to { transform: translateY(0); opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .match-card.scanning,
+  .ticket-cell.flash,
+  .status-pill.live .status-dot-pulse,
+  .detail-drawer,
+  .system-drawer {
+    animation: none !important;
+  }
 }
 
 .label-mono {
@@ -213,7 +238,6 @@ button:disabled { cursor: wait; opacity: .5; }
   display: flex;
   align-items: stretch;
   padding: 0 18px;
-  overflow-x: auto;
 }
 .stat-item {
   padding: 9px 20px;
@@ -233,6 +257,26 @@ button:disabled { cursor: wait; opacity: .5; }
   font: 600 9px/1.2 var(--font-mono);
   letter-spacing: .12em;
   color: var(--muted-light);
+}
+.stat-item[data-tip] {
+  position: relative;
+  cursor: default;
+}
+.stat-item[data-tip]:hover::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  white-space: nowrap;
+  font: 500 11px/1.3 var(--font-sans);
+  color: #fff;
+  background: var(--ink);
+  padding: 5px 10px;
+  border-radius: 6px;
+  pointer-events: none;
+  margin-top: 4px;
 }
 .stat-value {
   font-size: 16px;
