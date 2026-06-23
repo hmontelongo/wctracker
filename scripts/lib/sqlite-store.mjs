@@ -228,6 +228,12 @@ export function initSqlite(path) {
 
       CREATE INDEX IF NOT EXISTS notification_outbox_pending_idx
         ON notification_outbox (channel, status, next_attempt_at, priority);
+
+      CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
     `);
     ensureColumn(db, 'ticket_rows', 'country', 'TEXT');
     ensureColumn(db, 'ticket_rows', 'last_alert_at', 'TEXT');
@@ -426,12 +432,71 @@ function ruleTrigger(rule, row, previousRow, cycle) {
   };
 }
 
-function telegramNotificationsEnabled() {
-  return String(process.env.TELEGRAM_NOTIFICATIONS_ENABLED || '0') === '1';
+function telegramCredentialsReady() {
+  return Boolean(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID);
+}
+
+function readSetting(db, key, fallback = null) {
+  const row = db.prepare('SELECT value FROM app_settings WHERE key = ?').get(key);
+  return row?.value ?? fallback;
+}
+
+function writeSetting(db, key, value) {
+  const now = isoNow();
+
+  db.prepare(`
+    INSERT INTO app_settings (key, value, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET
+      value = excluded.value,
+      updated_at = excluded.updated_at
+  `).run(key, String(value), now);
+}
+
+function telegramGlobalAlertsEnabledFromDb(db) {
+  return readSetting(db, 'telegram_global_alerts_enabled', '0') === '1';
+}
+
+export function readTelegramSettings(options = {}) {
+  initSqlite(options.sqlitePath);
+  const db = openDatabase(options.sqlitePath);
+
+  try {
+    return {
+      globalAlertsEnabled: telegramGlobalAlertsEnabledFromDb(db),
+    };
+  } finally {
+    db.close();
+  }
+}
+
+export function updateTelegramSettings(input = {}, options = {}) {
+  initSqlite(options.sqlitePath);
+  const db = openDatabase(options.sqlitePath);
+
+  try {
+    db.exec('BEGIN IMMEDIATE');
+
+    if (Object.prototype.hasOwnProperty.call(input, 'globalAlertsEnabled')) {
+      writeSetting(db, 'telegram_global_alerts_enabled', input.globalAlertsEnabled ? '1' : '0');
+    }
+
+    const settings = {
+      globalAlertsEnabled: telegramGlobalAlertsEnabledFromDb(db),
+    };
+
+    db.exec('COMMIT');
+    return settings;
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  } finally {
+    db.close();
+  }
 }
 
 function enqueueNotification(db, notification) {
-  if (!telegramNotificationsEnabled()) {
+  if (!telegramCredentialsReady()) {
     return;
   }
 
@@ -507,6 +572,7 @@ export function persistCycleToSqlite(cycle, options = {}) {
     const currentRows = rowsByKey(cycle.rows || []);
     const triggeredAlertKeys = new Set();
     const enqueueNotifications = options.enqueueNotifications !== false;
+    const enqueueGlobalAlerts = enqueueNotifications && telegramGlobalAlertsEnabledFromDb(db);
 
     db.prepare(`
       INSERT INTO cycles (
@@ -692,7 +758,7 @@ export function persistCycleToSqlite(cycle, options = {}) {
       });
     }
 
-    for (const event of alertEvents) {
+    for (const event of enqueueGlobalAlerts ? alertEvents : []) {
       if (triggeredAlertKeys.has(`${event.row_key}|${event.event_at}`)) {
         continue;
       }

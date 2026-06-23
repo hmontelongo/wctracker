@@ -250,6 +250,8 @@ function describeEvent(event) {
     fast_targets_fetch_started: `Consultando ${event.targetCount || 0} endpoints`,
     fast_target_result: `Fast ${event.matchCode || ''}: ${event.rows || 0} filas, ${event.availableRows || 0} disponibles`,
     fast_cycle_failed_fallback: `Fast poll fallo, usando discovery: ${event.error || 'sin detalle'}`,
+    telegram_settings_updated: event.globalAlertsEnabled ? 'Telegram: alertas globales activas' : 'Telegram: solo alertas tuyas',
+    telegram_settings_failed: `Telegram fallo: ${event.error || 'sin detalle'}`,
     match_worker_started: `Worker ${event.workerIndex || ''}/${event.totalWorkers || ''} listo`,
     match_worker_failed: `Worker ${event.workerIndex || ''} fallo: ${event.error || 'sin detalle'}`,
     match_worker_finished: `Worker ${event.workerIndex || ''} cerrado`,
@@ -369,6 +371,7 @@ document.addEventListener('alpine:init', () => {
     systemOpen: false,
     queue: null,
     notifications: null,
+    telegramSettingsSaving: false,
     alertRules: [],
     alertCondition: 'becomes_available',
     alertRuleSaving: false,
@@ -446,6 +449,24 @@ document.addEventListener('alpine:init', () => {
       catch (e) { this.events = [{ event: 'dashboard_cycle_failed', error: e.message, emittedAt: new Date().toISOString() }, ...this.events]; }
     },
 
+    async toggleTelegramGlobalAlerts() {
+      if (this.telegramSettingsSaving) return;
+      this.telegramSettingsSaving = true;
+      try {
+        const payload = await postJson('/api/telegram-settings', {
+          globalAlertsEnabled: !this.telegramGlobalAlertsEnabled,
+        });
+        this.notifications = {
+          ...(this.notifications || {}),
+          settings: payload.settings || {},
+        };
+      } catch (error) {
+        this.events = [{ event: 'telegram_settings_failed', error: error.message, emittedAt: new Date().toISOString() }, ...this.events];
+      } finally {
+        this.telegramSettingsSaving = false;
+      }
+    },
+
     // --- Status ---
     get statusClass() {
       if (this.job?.lastError) return 'error';
@@ -462,6 +483,12 @@ document.addEventListener('alpine:init', () => {
     get showStartBtn() { return this.isAdmin && !this.job?.tickerRunning; },
     get showStopBtn() { return this.isAdmin && this.job?.tickerRunning; },
     get cycleDisabled() { return Boolean(this.job?.running); },
+    get telegramGlobalAlertsEnabled() {
+      return Boolean(this.notifications?.settings?.globalAlertsEnabled);
+    },
+    get telegramModeLabel() {
+      return this.telegramGlobalAlertsEnabled ? 'Globales on' : 'Solo tuyas';
+    },
 
     // --- Metrics ---
     get freshness() { return timeAgo(this.latestCycle?.cycleCompletedAt, this.now); },
@@ -748,6 +775,7 @@ document.addEventListener('alpine:init', () => {
         disponibles: c.availableRowCount, alertasActivas: this.alertCount,
         retencionAlertasMs: c.alertRetentionMs || DEFAULT_ALERT_RETENTION_MS,
         telegramListo: Boolean(this.notifications?.telegramReady),
+        alertasGlobalesTelegram: Boolean(this.telegramGlobalAlertsEnabled),
         notificacionesTelegram: this.notifications?.telegram || {},
         reglasActivas: this.alertRules.length,
       }, null, 2);

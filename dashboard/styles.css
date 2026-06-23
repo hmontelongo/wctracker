@@ -181,6 +181,50 @@ button:disabled { cursor: wait; opacity: .5; }
   gap: 9px;
 }
 
+.telegram-global-toggle {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 9px 4px 5px;
+  border: 1px solid var(--divider);
+  border-radius: 999px;
+  background: var(--field-bg);
+  color: var(--muted-dark);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.telegram-global-toggle.active {
+  border-color: var(--green-border);
+  background: var(--green-bg);
+  color: var(--green);
+}
+.telegram-toggle-track {
+  width: 30px;
+  height: 18px;
+  padding: 2px;
+  border-radius: 999px;
+  background: #d8d4c8;
+  display: flex;
+  align-items: center;
+  transition: background .16s ease;
+}
+.telegram-toggle-knob {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--panel);
+  box-shadow: 0 1px 3px rgba(23, 22, 28, .24);
+  transition: transform .16s ease;
+}
+.telegram-global-toggle.active .telegram-toggle-track {
+  background: var(--green-live);
+}
+.telegram-global-toggle.active .telegram-toggle-knob {
+  transform: translateX(12px);
+}
+
 /* ===== STATUS PILL ===== */
 .status-pill {
   display: flex;

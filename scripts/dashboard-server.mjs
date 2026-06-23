@@ -22,6 +22,8 @@ import {
   readLatestFromSqlite,
   readNotificationStats,
   readQueueStats,
+  readTelegramSettings,
+  updateTelegramSettings,
 } from './lib/sqlite-store.mjs';
 import {
   runTelegramNotifyOnce,
@@ -77,6 +79,7 @@ function latestState() {
     notifications: {
       telegramReady: telegramReady(telegramConfigFromEnv()),
       telegram: readNotificationStats(),
+      settings: readTelegramSettings(),
     },
   };
 }
@@ -384,6 +387,26 @@ const server = createServer(async (request, response) => {
 
   if (url.pathname === '/api/alert-rules' && request.method === 'GET') {
     sendJson(response, 200, { rules: listAlertRules() });
+    return;
+  }
+
+  if (url.pathname === '/api/telegram-settings' && request.method === 'GET') {
+    sendJson(response, 200, { settings: readTelegramSettings() });
+    return;
+  }
+
+  if (url.pathname === '/api/telegram-settings' && request.method === 'POST') {
+    try {
+      const body = await readBody(request);
+      const settings = updateTelegramSettings(body);
+      broadcast({
+        event: 'telegram_settings_updated',
+        globalAlertsEnabled: settings.globalAlertsEnabled,
+      });
+      sendJson(response, 200, { settings });
+    } catch (error) {
+      sendJson(response, 422, { error: error.message });
+    }
     return;
   }
 

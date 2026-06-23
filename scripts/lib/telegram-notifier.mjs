@@ -180,10 +180,13 @@ function telegramReplyMarkup(notification) {
 }
 
 export function telegramConfigFromEnv(env = process.env) {
+  const token = env.TELEGRAM_BOT_TOKEN || '';
+  const chatId = env.TELEGRAM_CHAT_ID || '';
+
   return {
-    enabled: String(env.TELEGRAM_NOTIFICATIONS_ENABLED || '0') === '1',
-    token: env.TELEGRAM_BOT_TOKEN || '',
-    chatId: env.TELEGRAM_CHAT_ID || '',
+    enabled: Boolean(token && chatId),
+    token,
+    chatId,
     intervalMs: Math.max(1000, Number(env.TELEGRAM_NOTIFY_INTERVAL_MS || 3000)),
     batchSize: Math.max(1, Number(env.TELEGRAM_NOTIFY_BATCH_SIZE || 5)),
     leaseMs: Math.max(5000, Number(env.TELEGRAM_NOTIFY_LEASE_MS || 30000)),
@@ -193,7 +196,7 @@ export function telegramConfigFromEnv(env = process.env) {
 }
 
 export function telegramReady(config = telegramConfigFromEnv()) {
-  return Boolean(config.enabled && config.token && config.chatId);
+  return Boolean(config.token && config.chatId);
 }
 
 export function formatTelegramRuleEvent({ type, rule, row }) {
