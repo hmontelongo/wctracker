@@ -483,24 +483,6 @@ button:disabled { cursor: wait; opacity: .5; }
 .board-toolbar-title { font-size: 16px; font-weight: 700; letter-spacing: -.01em; }
 .board-toolbar-sub { font-size: 11.5px; color: var(--muted-dark); margin-top: 1px; }
 
-.board-filters {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: none;
-}
-
-.country-filter {
-  height: 34px;
-  min-width: 148px;
-  border: 1px solid var(--divider);
-  border-radius: 9px;
-  background: var(--panel);
-  color: var(--ink);
-  font: 600 12px/1 var(--font-sans);
-  padding: 0 28px 0 10px;
-}
-
 /* ===== SEGMENTED CONTROL ===== */
 .seg-control {
   display: flex;
@@ -1226,8 +1208,6 @@ pre {
     gap: 10px;
   }
   .board-toolbar-title { font-size: 14px; }
-  .board-filters { width: 100%; align-items: stretch; flex-direction: column; gap: 8px; }
-  .country-filter { width: 100%; min-width: 0; }
   .seg-control { width: 100%; overflow: hidden; }
   .seg-control button { flex: 1; text-align: center; padding: 7px 2px; font-size: 11.5px; white-space: nowrap; min-width: 0; }
 

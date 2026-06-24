@@ -1,5 +1,4 @@
 const DEFAULT_ALERT_RETENTION_MS = 10 * 60 * 1000;
-const COUNTRY_FILTER_COOKIE = 'jaime_country_filter';
 
 const ZONE_COLORS = {
   'Champions Club': '#b8902f',
@@ -55,43 +54,14 @@ function money(value) {
   return new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN', maximumFractionDigits: 0 }).format(value);
 }
 
-function readCookie(name) {
-  const prefix = `${name}=`;
-  const raw = document.cookie
-    .split(';')
-    .map((part) => part.trim())
-    .find((part) => part.startsWith(prefix))
-    ?.slice(prefix.length) || '';
-  return raw ? decodeURIComponent(raw) : '';
-}
-
-function writeCookie(name, value) {
-  document.cookie = `${name}=${encodeURIComponent(value)}; max-age=31536000; path=/; SameSite=Lax`;
-}
-
-function rowShopCountry(row) {
-  return row?.shopCountry || row?.visitorCountry || row?.shop_country || '';
-}
-
-function uniqueValues(values) {
-  return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
-}
-
 function ticketKey(row) {
-  const shopCountry = rowShopCountry(row);
-  const parts = [row.matchCode, row.performanceId, row.loungeId, row.seatingCode, row.packageTitle, row.priceMxn].map((part) => part ?? '');
-  return shopCountry ? [shopCountry, ...parts].join('|') : parts.join('|');
+  return [row.matchCode, row.performanceId, row.loungeId, row.seatingCode, row.packageTitle, row.priceMxn].join('|');
 }
 
 function ticketKeyAliases(row) {
-  const shopCountry = rowShopCountry(row);
   const withPackage = [row.matchCode, row.performanceId, row.loungeId, row.seatingCode, row.packageTitle, row.priceMxn].map((part) => part ?? '').join('|');
   const legacy = [row.matchCode, row.performanceId, row.loungeId, row.seatingCode, row.priceMxn].map((part) => part ?? '').join('|');
-  const aliases = shopCountry
-    ? [[shopCountry, withPackage].join('|'), withPackage, [shopCountry, legacy].join('|'), legacy]
-    : [withPackage, legacy];
-
-  return [...new Set(aliases.filter(Boolean))];
+  return [...new Set([withPackage, legacy].filter(Boolean))];
 }
 
 function ruleMatchesRow(rule, row) {
@@ -435,7 +405,7 @@ document.addEventListener('alpine:init', () => {
     pulseMatches: {},
     collapsed: {},
     isAdmin: location.pathname.replace(/\/$/, '').endsWith('/admin') || new URLSearchParams(location.search).has('admin'),
-    countryFilter: readCookie(COUNTRY_FILTER_COOKIE) || 'all',
+    visitorCountry: 'Mexico',
     matchConcurrency: 6,
     intervalMs: 60000,
 
@@ -487,13 +457,10 @@ document.addEventListener('alpine:init', () => {
         this.alertRules = rulesPayload.rules || [];
       }
 
-      if (this.countryFilter !== 'all' && this.availableCountries.length > 0 && !this.availableCountries.includes(this.countryFilter)) {
-        this.setCountryFilter('all', false);
-      }
     },
 
     requestBody() {
-      return { matchConcurrency: Number(this.matchConcurrency || 1), intervalMs: Number(this.intervalMs || 60000) };
+      return { visitorCountry: this.visitorCountry, matchConcurrency: Number(this.matchConcurrency || 1), intervalMs: Number(this.intervalMs || 60000) };
     },
 
     async startTicker() {
@@ -549,30 +516,6 @@ document.addEventListener('alpine:init', () => {
       return this.telegramGlobalAlertsEnabled ? 'Alertas generales ON' : 'Alertas generales OFF';
     },
 
-    countryRows(rows) {
-      const input = rows || [];
-      if (this.countryFilter === 'all') return input;
-      return input.filter((row) => rowShopCountry(row) === this.countryFilter);
-    },
-    get availableCountries() {
-      return uniqueValues([
-        ...(this.latestCycle?.visitorCountries || []),
-        ...(this.latestCycle?.shopCountries || []),
-        ...(this.latestCycle?.rows || []).map((row) => rowShopCountry(row)),
-      ]);
-    },
-    get scannedCountriesLabel() {
-      return this.availableCountries.length ? this.availableCountries.join(', ') : 'Sin datos';
-    },
-    setCountryFilter(country, close = true) {
-      this.countryFilter = country || 'all';
-      writeCookie(COUNTRY_FILTER_COOKIE, this.countryFilter);
-      if (close) this.closeDetail();
-    },
-    get rowsInCountry() {
-      return this.countryRows(deduplicateRows(this.latestCycle?.rows || []));
-    },
-
     // --- Metrics ---
     get freshness() { return timeAgo(this.latestCycle?.cycleCompletedAt, this.now); },
     get freshnessClass() {
@@ -586,24 +529,18 @@ document.addEventListener('alpine:init', () => {
     isScanning(matchCode) { return Boolean(this.pulseMatches[matchCode]); },
     matchHasAlerts(matchCode) { return this.alerts.some((r) => r.matchCode === matchCode); },
     isRowAlert(row) { return isActiveAlert(row, this.latestCycle, this.now); },
-    get matchesFound() {
-      if (this.countryFilter === 'all') return this.latestCycle?.matchCardsFound ?? 0;
-      return new Set(this.rowsInCountry.map((row) => row.matchCode || row.performanceId).filter(Boolean)).size;
-    },
-    get matchesScanned() {
-      if (this.countryFilter === 'all') return this.latestCycle?.matchCardsScanned ?? 0;
-      return new Set(this.rowsInCountry.map((row) => row.matchCode || row.performanceId).filter(Boolean)).size;
-    },
-    get rowCount() { return this.rowsInCountry.length; },
-    get availableCount() { return this.rowsInCountry.filter((row) => row.available).length; },
+    get matchesFound() { return this.latestCycle?.matchCardsFound ?? 0; },
+    get matchesScanned() { return this.latestCycle?.matchCardsScanned ?? 0; },
+    get rowCount() { return deduplicateRows(this.latestCycle?.rows || []).length; },
+    get availableCount() { return deduplicateRows(this.latestCycle?.rows || []).filter((row) => row.available).length; },
     get lastUpdated() {
       return this.latestCycle?.cycleCompletedAt ? new Date(this.latestCycle.cycleCompletedAt).toLocaleString() : 'Sin ciclos aún';
     },
-    get shopLabel() { return this.countryFilter === 'all' ? 'Todas las tiendas' : this.countryFilter; },
+    get shopLabel() { return this.latestCycle?.visitorCountry || this.visitorCountry; },
 
     // --- Alerts ---
-    get alerts() { return this.countryRows(activeAlerts(this.latestCycle, this.now)).slice(0, 8); },
-    get alertCount() { return this.countryRows(activeAlerts(this.latestCycle, this.now)).length; },
+    get alerts() { return activeAlerts(this.latestCycle, this.now).slice(0, 8); },
+    get alertCount() { return activeAlerts(this.latestCycle, this.now).length; },
     get retentionMin() { return Math.round(alertRetentionMs(this.latestCycle) / 60000); },
     alertZoneColor(row) { return zoneColor(row); },
     alertTeams(row) { return matchInfo(row, this.latestCycle).teams; },
@@ -628,7 +565,7 @@ document.addEventListener('alpine:init', () => {
     setFilter(f) { this.filter = f; this.closeDetail(); },
 
     get filteredRows() {
-      const rows = this.rowsInCountry;
+      const rows = deduplicateRows(this.latestCycle?.rows || []);
       if (this.filter === 'available') return rows.filter((r) => r.available);
       if (this.filter === 'unavailable') return rows.filter((r) => !r.available);
       return rows;
@@ -645,13 +582,13 @@ document.addEventListener('alpine:init', () => {
     },
 
     matchAvailLabel(m) {
-      const all = this.countryRows(deduplicateRows((this.latestCycle?.rows || []).filter((r) => r.matchCode === m.matchCode)));
+      const all = deduplicateRows((this.latestCycle?.rows || []).filter((r) => r.matchCode === m.matchCode));
       const avail = all.filter((r) => r.available).length;
       return `${avail}/${all.length} configs`;
     },
 
     matchAvailQty(m) {
-      const all = this.countryRows(deduplicateRows((this.latestCycle?.rows || []).filter((r) => r.matchCode === m.matchCode)));
+      const all = deduplicateRows((this.latestCycle?.rows || []).filter((r) => r.matchCode === m.matchCode));
       return all.reduce((s, r) => s + Number(r.availableQuantity || 0), 0);
     },
 
@@ -830,7 +767,7 @@ document.addEventListener('alpine:init', () => {
     // Match detail computed
     get dmRows() {
       if (!this.drawerMatchCode) return [];
-      return this.countryRows(deduplicateRows((this.latestCycle?.rows || []).filter((r) => r.matchCode === this.drawerMatchCode)));
+      return deduplicateRows((this.latestCycle?.rows || []).filter((r) => r.matchCode === this.drawerMatchCode));
     },
     get dmInfo() { return this.dmRows.length ? matchInfo(this.dmRows[0], this.latestCycle) : {}; },
     get dmMeta() { return this.dmRows.length ? matchLocation(this.dmRows[0], this.latestCycle) : ''; },
