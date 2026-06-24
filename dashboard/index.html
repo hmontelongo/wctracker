@@ -33,7 +33,7 @@
             </span>
             <span x-text="statusLabel">En espera</span>
           </div>
-          <button type="button"
+          <button type="button" x-show="isAdmin" x-cloak
                   class="telegram-global-toggle"
                   :class="{ active: telegramGlobalAlertsEnabled }"
                   :aria-pressed="telegramGlobalAlertsEnabled"
