@@ -31,7 +31,7 @@ export function configFromEnv(apiKey, overrides = {}) {
   const fastPollEnabled = String(overrides.fastPollEnabled ?? process.env.FIFA_FAST_POLL_ENABLED ?? '1') !== '0';
   const fullDiscoveryEvery = Math.max(0, Number(overrides.fullDiscoveryEvery ?? process.env.FIFA_FULL_DISCOVERY_EVERY ?? 10));
   const fastFetchConcurrency = Math.max(1, Number(overrides.fastFetchConcurrency || process.env.FIFA_FAST_FETCH_CONCURRENCY || matchConcurrency));
-  const discoveryIntervalMs = Math.max(5000, Number(overrides.discoveryIntervalMs || process.env.FIFA_DISCOVERY_INTERVAL_MS || Math.min(intervalMs, 30000)));
+  const discoveryIntervalMs = Math.max(5000, Number(overrides.discoveryIntervalMs || process.env.FIFA_DISCOVERY_INTERVAL_MS || 600000));
   const discoveryLeaseMs = Math.max(15000, Number(overrides.discoveryLeaseMs || process.env.FIFA_DISCOVERY_LEASE_MS || 90000));
   const jobLeaseMs = Math.max(30000, Number(overrides.jobLeaseMs || process.env.FIFA_JOB_LEASE_MS || 180000));
   const jobRetryDelayMs = Math.max(1000, Number(overrides.jobRetryDelayMs || process.env.FIFA_JOB_RETRY_DELAY_MS || 15000));

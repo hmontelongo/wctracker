@@ -7,9 +7,12 @@ import {
   DEFAULT_LATEST_CYCLE_PATH,
   DEFAULT_STATE_PATH,
   configFromEnv,
+  knownTargetsFromPreviousState,
+  loadPreviousState,
+  persistCycle,
+  runFifaFastCycle,
 } from './lib/fifa-job-system.mjs';
 import {
-  processNextMatchJob,
   publishLatestCycleFromQueue,
   runDiscoveryOnce,
   runWorkerPoolOnce,
@@ -207,65 +210,43 @@ async function runOneSweep(overrides = {}) {
   }
 }
 
-async function discoveryLoop(overrides = {}) {
-  jobState.discoveryLoopRunning = true;
+async function fastPollLoop(overrides = {}) {
+  jobState.workerLoopRunning = true;
+  let lastDiscoveryAt = 0;
 
   try {
     while (jobState.tickerRunning) {
       const config = configForRun(overrides);
       const startedAt = Date.now();
+      const previousState = loadPreviousState(config.statePath);
+      const knownTargets = knownTargetsFromPreviousState(previousState, config.shopUrl);
+      const discoveryStale = Date.now() - lastDiscoveryAt > config.discoveryIntervalMs;
+
+      if (knownTargets.length === 0 || discoveryStale) {
+        try {
+          await runDiscoveryOnce(config, broadcast);
+          lastDiscoveryAt = Date.now();
+        } catch (error) {
+          jobState.lastError = error.message;
+          broadcast({ event: 'discovery_loop_error', error: error.message });
+        }
+      }
 
       try {
-        await runDiscoveryOnce(config, broadcast);
+        const freshState = loadPreviousState(config.statePath);
+        const cycle = await runFifaFastCycle(config, freshState, broadcast);
+        persistCycle(cycle, config);
+        await notifyTelegramOnce('fast_poll_cycle_published');
+        jobState.completedAt = cycle.cycleCompletedAt;
       } catch (error) {
         jobState.lastError = error.message;
-        broadcast({ event: 'discovery_loop_error', error: error.message });
+        broadcast({ event: 'worker_loop_error', workerIndex: 1, error: error.message });
       }
 
-      const remaining = Math.max(0, config.discoveryIntervalMs - (Date.now() - startedAt));
+      const elapsed = Date.now() - startedAt;
+      const remaining = Math.max(0, config.intervalMs - elapsed);
       await sleep(remaining);
     }
-  } finally {
-    jobState.discoveryLoopRunning = false;
-  }
-}
-
-async function singleWorkerLoop(workerIndex, overrides = {}) {
-  while (jobState.tickerRunning) {
-    const config = configForRun(overrides);
-
-    try {
-      const result = await processNextMatchJob(config, workerIndex, broadcast);
-
-      if (result.processed) {
-        const published = publishLatestCycleFromQueue(config, broadcast);
-        await notifyTelegramOnce('worker_cycle_published');
-        jobState.completedAt = published?.cycle?.cycleCompletedAt || jobState.completedAt;
-      }
-
-      if (!result.claimed) {
-        await sleep(config.workerIdleMs);
-      }
-    } catch (error) {
-      jobState.lastError = error.message;
-      broadcast({
-        event: 'worker_loop_error',
-        workerIndex: workerIndex + 1,
-        error: error.message,
-      });
-      await sleep(config.workerIdleMs);
-    }
-  }
-}
-
-async function workerLoop(overrides = {}) {
-  jobState.workerLoopRunning = true;
-
-  try {
-    const config = configForRun(overrides);
-    await Promise.all(
-      Array.from({ length: config.matchConcurrency }, (_, index) => singleWorkerLoop(index, overrides)),
-    );
   } finally {
     jobState.workerLoopRunning = false;
   }
@@ -313,16 +294,16 @@ function startTicker(overrides = {}) {
   jobState.running = true;
   jobState.startedAt = new Date().toISOString();
   jobState.completedAt = null;
-  jobState.tickerIntervalMs = config.discoveryIntervalMs;
+  jobState.tickerIntervalMs = config.intervalMs;
   broadcast({
     event: 'dashboard_ticker_started',
-    intervalMs: config.discoveryIntervalMs,
+    intervalMs: config.intervalMs,
     discoveryIntervalMs: config.discoveryIntervalMs,
     workerIdleMs: config.workerIdleMs,
+    mode: 'fast-poll',
     autostart: Boolean(overrides.autostart),
   });
-  discoveryLoop(overrides).catch(() => {});
-  workerLoop(overrides).catch(() => {});
+  fastPollLoop(overrides).catch(() => {});
 
   return true;
 }
