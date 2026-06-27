@@ -1095,6 +1095,12 @@ export function markNotificationFailed(id, owner, error, options = {}) {
 }
 
 export function backfillSqliteFromJson(options = {}) {
+  const existing = readLatestFromSqlite(options);
+
+  if (existing.latestCycle) {
+    return false;
+  }
+
   const latestCycle = options.latestCycle || readJson(options.latestCyclePath || 'artifacts/fifa-cycle-latest.json');
 
   if (!latestCycle) {

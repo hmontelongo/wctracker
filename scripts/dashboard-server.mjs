@@ -221,10 +221,11 @@ async function fastPollLoop(overrides = {}) {
       const previousState = loadPreviousState(config.statePath);
       const knownTargets = knownTargetsFromPreviousState(previousState, config.shopUrl);
       const discoveryStale = Date.now() - lastDiscoveryAt > config.discoveryIntervalMs;
+      let discoveryResult = null;
 
       if (knownTargets.length === 0 || discoveryStale) {
         try {
-          await runDiscoveryOnce(config, broadcast);
+          discoveryResult = await runDiscoveryOnce(config, broadcast);
           lastDiscoveryAt = Date.now();
         } catch (error) {
           jobState.lastError = error.message;
@@ -233,11 +234,44 @@ async function fastPollLoop(overrides = {}) {
       }
 
       try {
+        if (knownTargets.length === 0 || Number(discoveryResult?.jobsInserted || 0) > 0) {
+          const sweep = await runWorkerPoolOnce(config, broadcast);
+          const published = publishLatestCycleFromQueue(config, broadcast);
+          await notifyTelegramOnce('bootstrap_cycle_published');
+          jobState.completedAt = published?.cycle?.cycleCompletedAt || jobState.completedAt;
+          if (published?.cycle) {
+            jobState.lastError = null;
+          }
+          const bootstrappedState = loadPreviousState(config.statePath);
+          const bootstrappedTargets = knownTargetsFromPreviousState(bootstrappedState, config.shopUrl);
+
+          if (bootstrappedTargets.length === 0) {
+            broadcast({
+              event: 'fast_poll_bootstrap_waiting',
+              reason: 'No known targets available after discovery/bootstrap.',
+              jobsInserted: discoveryResult?.jobsInserted || 0,
+              jobsProcessed: sweep?.processed || 0,
+            });
+            const elapsed = Date.now() - startedAt;
+            const remaining = Math.max(0, config.intervalMs - elapsed);
+            await sleep(remaining);
+            continue;
+          }
+
+          if (knownTargets.length === 0 || Number(sweep?.processed || 0) > 0) {
+            const elapsed = Date.now() - startedAt;
+            const remaining = Math.max(0, config.intervalMs - elapsed);
+            await sleep(remaining);
+            continue;
+          }
+        }
+
         const freshState = loadPreviousState(config.statePath);
         const cycle = await runFifaFastCycle(config, freshState, broadcast);
         persistCycle(cycle, config);
         await notifyTelegramOnce('fast_poll_cycle_published');
         jobState.completedAt = cycle.cycleCompletedAt;
+        jobState.lastError = null;
       } catch (error) {
         jobState.lastError = error.message;
         broadcast({ event: 'worker_loop_error', workerIndex: 1, error: error.message });
