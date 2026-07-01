@@ -63,6 +63,7 @@ backfillSqliteFromJson({
   latestCyclePath: DEFAULT_LATEST_CYCLE_PATH,
   statePath: DEFAULT_STATE_PATH,
 });
+updateDiscoveryMetaCache();
 
 function readJson(path, fallback = null) {
   if (!existsSync(path)) {
@@ -230,13 +231,14 @@ function filterPastMatches(state) {
   };
 }
 
-function refreshMetadataFromDiscovery(state) {
-  if (!state) return state;
+let cachedDiscoveryMeta = null;
+
+function updateDiscoveryMetaCache() {
   const { latestDiscovery } = readQueueStats();
-  if (!latestDiscovery?.payload_json) return state;
+  if (!latestDiscovery?.payload_json) return;
   const discovery = JSON.parse(latestDiscovery.payload_json);
   const cards = discovery.allCards || [];
-  if (cards.length === 0) return state;
+  if (cards.length === 0) return;
 
   const meta = new Map();
   for (const card of cards) {
@@ -244,7 +246,11 @@ function refreshMetadataFromDiscovery(state) {
     const parsed = inferMatchMetadataFromText(card.text);
     if (parsed.teams) meta.set(card.matchCode, parsed);
   }
-  if (meta.size === 0) return state;
+  if (meta.size > 0) cachedDiscoveryMeta = meta;
+}
+
+function refreshMetadataFromDiscovery(state) {
+  if (!state || !cachedDiscoveryMeta) return state;
 
   const refresh = (item) => {
     const fresh = meta.get(item.matchCode);
@@ -277,6 +283,7 @@ async function fastPollLoop(overrides = {}) {
         try {
           discoveryResult = await runDiscoveryOnce(config, broadcast);
           lastDiscoveryAt = Date.now();
+          updateDiscoveryMetaCache();
         } catch (error) {
           jobState.lastError = error.message;
           broadcast({ event: 'discovery_loop_error', error: error.message });
