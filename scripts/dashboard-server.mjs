@@ -12,6 +12,7 @@ import {
   persistCycle,
   runFifaFastCycle,
 } from './lib/fifa-job-system.mjs';
+import { inferMatchMetadataFromText } from './lib/fifa.mjs';
 import {
   publishLatestCycleFromQueue,
   runDiscoveryOnce,
@@ -229,6 +230,36 @@ function filterPastMatches(state) {
   };
 }
 
+function refreshMetadataFromDiscovery(state) {
+  if (!state) return state;
+  const { latestDiscovery } = readQueueStats();
+  if (!latestDiscovery?.payload_json) return state;
+  const discovery = JSON.parse(latestDiscovery.payload_json);
+  const cards = discovery.allCards || [];
+  if (cards.length === 0) return state;
+
+  const meta = new Map();
+  for (const card of cards) {
+    if (!card.matchCode) continue;
+    const parsed = inferMatchMetadataFromText(card.text);
+    if (parsed.teams) meta.set(card.matchCode, parsed);
+  }
+  if (meta.size === 0) return state;
+
+  const refresh = (item) => {
+    const fresh = meta.get(item.matchCode);
+    if (!fresh) return item;
+    return { ...item, teams: fresh.teams ?? item.teams, venue: fresh.venue ?? item.venue, city: fresh.city ?? item.city, country: fresh.country ?? item.country, matchDate: fresh.matchDate ?? item.matchDate };
+  };
+
+  return {
+    ...state,
+    knownTargets: (state.knownTargets || []).map(refresh),
+    latestRows: (state.latestRows || []).map(refresh),
+    latestAvailableRows: (state.latestAvailableRows || []).map(refresh),
+  };
+}
+
 async function fastPollLoop(overrides = {}) {
   jobState.workerLoopRunning = true;
   let lastDiscoveryAt = 0;
@@ -237,7 +268,7 @@ async function fastPollLoop(overrides = {}) {
     while (jobState.tickerRunning) {
       const config = configForRun(overrides);
       const startedAt = Date.now();
-      const previousState = filterPastMatches(loadPreviousState(config.statePath));
+      const previousState = refreshMetadataFromDiscovery(filterPastMatches(loadPreviousState(config.statePath)));
       const knownTargets = knownTargetsFromPreviousState(previousState, config.shopUrl);
       const discoveryStale = Date.now() - lastDiscoveryAt > config.discoveryIntervalMs;
       let discoveryResult = null;
@@ -285,7 +316,7 @@ async function fastPollLoop(overrides = {}) {
           }
         }
 
-        const freshState = filterPastMatches(loadPreviousState(config.statePath));
+        const freshState = refreshMetadataFromDiscovery(filterPastMatches(loadPreviousState(config.statePath)));
         const cycle = await runFifaFastCycle(config, freshState, broadcast);
         persistCycle(cycle, config);
         await notifyTelegramOnce('fast_poll_cycle_published');
