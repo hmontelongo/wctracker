@@ -45,6 +45,7 @@ const autostartTicker = String(process.env.DASHBOARD_AUTOSTART_TICKER ?? '1') !=
 const root = process.cwd();
 const staticRoot = resolve(root, 'dashboard');
 const clients = new Set();
+let cachedDiscoveryMeta = null;
 const jobState = {
   running: false,
   tickerRunning: false,
@@ -230,8 +231,6 @@ function filterPastMatches(state) {
     latestAvailableRows: (state.latestAvailableRows || []).filter(r => !isMatchPast(r.matchDate)),
   };
 }
-
-let cachedDiscoveryMeta = null;
 
 function updateDiscoveryMetaCache() {
   const { latestDiscovery } = readQueueStats();
