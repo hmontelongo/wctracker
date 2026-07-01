@@ -210,6 +210,25 @@ async function runOneSweep(overrides = {}) {
   }
 }
 
+function isMatchPast(matchDate) {
+  if (!matchDate) return false;
+  const m = matchDate.match(/^(June|July)\s+(\d{1,2})/i);
+  if (!m) return false;
+  const month = m[1].toLowerCase() === 'june' ? 5 : 6;
+  const matchEnd = new Date(2026, month, Number(m[2]) + 1);
+  return Date.now() >= matchEnd.getTime();
+}
+
+function filterPastMatches(state) {
+  if (!state) return state;
+  return {
+    ...state,
+    knownTargets: (state.knownTargets || []).filter(t => !isMatchPast(t.matchDate)),
+    latestRows: (state.latestRows || []).filter(r => !isMatchPast(r.matchDate)),
+    latestAvailableRows: (state.latestAvailableRows || []).filter(r => !isMatchPast(r.matchDate)),
+  };
+}
+
 async function fastPollLoop(overrides = {}) {
   jobState.workerLoopRunning = true;
   let lastDiscoveryAt = 0;
@@ -218,7 +237,7 @@ async function fastPollLoop(overrides = {}) {
     while (jobState.tickerRunning) {
       const config = configForRun(overrides);
       const startedAt = Date.now();
-      const previousState = loadPreviousState(config.statePath);
+      const previousState = filterPastMatches(loadPreviousState(config.statePath));
       const knownTargets = knownTargetsFromPreviousState(previousState, config.shopUrl);
       const discoveryStale = Date.now() - lastDiscoveryAt > config.discoveryIntervalMs;
       let discoveryResult = null;
@@ -266,7 +285,7 @@ async function fastPollLoop(overrides = {}) {
           }
         }
 
-        const freshState = loadPreviousState(config.statePath);
+        const freshState = filterPastMatches(loadPreviousState(config.statePath));
         const cycle = await runFifaFastCycle(config, freshState, broadcast);
         persistCycle(cycle, config);
         await notifyTelegramOnce('fast_poll_cycle_published');
